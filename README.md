@@ -57,15 +57,23 @@ Adding a new language means implementing `parse_<lang>_file()` in `build/01_extr
 
 ```
 hyperretrieval/
-├── build/                     ← 7-stage pipeline (run once to build indexes)
+├── build/                     ← 8-stage pipeline (run once to build indexes)
 │   ├── 01_extract.py          ← Parse source → symbols, bodies, call graph, log patterns
-│   ├── 02_build_graph.py      ← Build NetworkX graph, Louvain clustering at module level
+│   │                             Tree-sitter for Haskell/Rust/Groovy; ast module for Python
+│   │                             Parallel across services (multiprocessing.Pool)
+│   ├── 02_build_graph.py      ← Build NetworkX graph, Leiden clustering at module level
 │   ├── 03_embed.py            ← GPU-batch embed all symbols → LanceDB (vectors.lance)
 │   ├── 04_summarize.py        ← LLM-summarize each cluster → human-readable descriptions
+│   │                             Adaptive sampling: scales with cluster size, business-logic
+│   │                             modules (Product, OLTP, Flow, Handler) sampled first
 │   ├── 05_package.py          ← Copy final artifacts into workspace/artifacts/
-│   ├── 06_build_cochange.py   ← Parse git history → co-change index
+│   ├── 06_build_cochange.py   ← Parse git history → co-change index (streaming, O(1) memory)
 │   ├── 07_chunk_docs.py       ← Chunk + embed markdown docs into docs.lance
-│   └── run_pipeline.sh        ← Run all 7 stages end-to-end
+│   ├── 08_generate_arch_docs.py ← Auto-generate architecture docs via LLM
+│   │                             Generate → Verify → Correct loop, saves to docs/generated/
+│   └── run_pipeline.sh        ← Run all stages end-to-end
+│                                 Flags: --from-stage N, --only-stage N
+│                                 Auto-cleans stale outputs before each run
 │
 ├── serve/                     ← Proprietary engine — orgs never modify this
 │   ├── retrieval_engine.py    ← Core library: loads all indexes, graph traversal, vector search
@@ -126,7 +134,8 @@ models/
 python3 --version   # 3.11+
 
 pip install chainlit openai lancedb sentence-transformers networkx \
-            pyarrow python-louvain mcp ijson
+            pyarrow leidenalg igraph rank-bm25 mcp ijson pyyaml \
+            tree-sitter tree-sitter-haskell tree-sitter-rust tree-sitter-groovy
 
 # GPU needed only for local embedding (stage 3 + embed_server with EMBED_PROVIDER=local)
 # Cloud providers (openai, voyage, cohere, etc.) require no GPU — see Embedding providers
@@ -184,14 +193,21 @@ export LLM_MODEL=your-model-name
 
 bash build/run_pipeline.sh   # 30 min – 2 h depending on codebase size
 
+# Resume from a specific stage (stages before N are skipped, outputs preserved)
+bash build/run_pipeline.sh --from-stage 4
+
+# Run a single stage only
+bash build/run_pipeline.sh --only-stage 7
+
 # Or stage by stage:
-python3 build/01_extract.py        # 5–15 min for 100k symbols
-python3 build/02_build_graph.py    # ~2 min
+python3 build/01_extract.py        # 5–15 min for 100k symbols (parallel across services)
+python3 build/02_build_graph.py    # ~2 min (Leiden clustering)
 python3 build/03_embed.py          # 20–60 min (GPU-heavy, or fast with cloud provider)
 python3 build/04_summarize.py      # ~30 min (LLM API, crash-safe/resumable)
 python3 build/05_package.py        # ~1 min
-python3 build/06_build_cochange.py # 10–30 min
+python3 build/06_build_cochange.py # 10–30 min (streaming, safe on large history)
 python3 build/07_chunk_docs.py     # ~5 min
+python3 build/08_generate_arch_docs.py  # 10–30 min (LLM, resumable)
 ```
 
 ### Step 5 — Start the servers
@@ -509,6 +525,64 @@ Then add the file glob and parser call inside the service loop in `main()`.
 
 ---
 
+## Config reference
+
+`config.yaml` (copied from `config.example.yaml`) controls the build and serve layers.
+
+```yaml
+workspace: your-org
+
+artifacts_dir: /path/to/workspaces/your-org/artifacts
+output_dir:   /path/to/workspaces/your-org/output
+source_dir:   /path/to/workspaces/your-org/source
+git_history:  /path/to/workspaces/your-org/git_history.json
+model_dir:    /path/to/models/your-embed-model
+
+llm_base_url: https://your-llm-endpoint
+llm_model:    your-model-name
+llm_api_key:  your-api-key   # also readable from LLM_API_KEY env var
+
+chainlit_port: 8000
+mcp_port:      8002
+embed_port:    8001
+
+# ── Service profiles ──────────────────────────────────────────────────────────
+# role:           orchestrator | connector | entry_point | persistence | worker
+# traffic_weight: 0.0–1.0 — relative production importance; biases retrieval
+# region:         which deployment region this service handles
+service_profiles:
+  payment-core:
+    role:           orchestrator
+    traffic_weight: 1.0
+    region:         global
+    description:    "Core transaction processing. Every payment passes through here."
+  gateway-connector:
+    role:           connector
+    traffic_weight: 0.85
+    region:         apac
+    description:    "Connector layer for payment gateways."
+
+# ── Keyword allowlist ─────────────────────────────────────────────────────────
+# Short domain terms that bypass the stopword/length filter in keyword search
+kw_allowlist:
+  - upi
+  - emi
+  - mandate
+  - 3ds
+
+# ── Architecture doc generation (stage 8) ────────────────────────────────────
+doc_generation:
+  enabled:                true
+  output_dir:             /path/to/workspaces/your-org/docs/generated
+  max_verify_iterations:  3
+  min_accuracy_threshold: 0.80
+  entry_point_patterns:   [WorkFlow, Flow, Handler, Router, Service, Manager]
+  skip_if_exists:         true
+  model:                  your-model-name
+```
+
+---
+
 ## Best practices
 
 ### Build pipeline
@@ -540,6 +614,114 @@ Then add the file glob and parser call inside the service loop in `main()`.
 - Rebuild the vector index (`03_embed.py`) whenever you change the embedding provider or model
 - Re-run the full pipeline periodically as the codebase evolves — the co-change index especially benefits from fresh commit history
 - Store API keys in environment variables or a secrets manager, never in `config.yaml`
+
+---
+
+## Design decisions and learnings
+
+Every non-obvious decision in this system has a reason. This section explains what was built, what was tried first, what failed, and why the current approach is the right one. It is written to help anyone picking up this codebase understand not just *what* the system does but *why* it does it that way.
+
+---
+
+### Why tree-sitter over regex for parsing (Stage 1)
+
+**The problem with regex:** Haskell and Rust use syntactic structures — indentation blocks, nested braces, `where` clauses — that are impossible to reliably delimit with regular expressions. The original regex-based body extraction either captured too little (cut off mid-function) or too much (bled into the next definition). An extracted body that starts correctly but ends at the wrong line confuses the embedding model and produces misleading similarity scores.
+
+**What tree-sitter gives you:** Tree-sitter builds a full Abstract Syntax Tree (AST) using byte offsets. Every function node has a precise `start_byte` and `end_byte` — the body is exactly `src[start_byte:end_byte]`, no heuristic needed.
+
+**The analogy:** Regex parsing is like estimating where a room ends by counting steps from the door. Tree-sitter is GPS — it gives you the exact boundary coordinates.
+
+**The fallback:** Tree-sitter parsers are installed per-language (`tree-sitter-haskell`, `tree-sitter-rust`, `tree-sitter-groovy`). If a parser is unavailable, each extractor falls back to the regex approach automatically — so the system degrades gracefully rather than failing hard.
+
+---
+
+### Why Leiden over Louvain for clustering (Stage 2)
+
+**The defect in Louvain:** Louvain has a mathematically proven flaw — it can produce *disconnected* communities, where nodes in the same cluster have no path between them in the graph. This means two modules with no shared imports or co-change history could end up in the same cluster, producing nonsensical summaries.
+
+**Leiden fixes this provably.** The Leiden algorithm guarantees that every cluster is internally connected. It runs in O(n log n) — faster than Louvain on large graphs — and uses the same API, making it a drop-in replacement.
+
+**Why it matters for us:** Cluster summaries are the high-level map that retrieval uses to route queries. A disconnected cluster produces a summary that mixes unrelated modules. The LLM summarizer then writes a confused description that sends queries to the wrong part of the codebase.
+
+---
+
+### Why BM25 + Reciprocal Rank Fusion alongside vector search (Serve layer)
+
+**The exact-name problem:** Dense vector embeddings excel at semantic similarity — "what handles retry logic?" will find the right function even if it's named `executeWithBackoff`. But if you search for `TxnSplitDetail` (an exact type name), the embedding model may rank semantically-similar-but-wrong types above the exact match, because embeddings encode meaning, not spelling.
+
+**BM25** (a classical information retrieval algorithm) uses IDF weighting — rare tokens score very high. `TxnSplitDetail` appears in few documents, so BM25 ranks the exact match first.
+
+**Reciprocal Rank Fusion (RRF):** Instead of trying to combine two scored lists by tuning weights (fragile, hyperparameter-sensitive), RRF converts each list to rank positions and scores each document as `Σ 1/(60 + rank_i)`. The constant 60 is empirically validated across many retrieval benchmarks. No hyperparameters, no tuning — just merge and rank.
+
+**The analogy:** Vector search is like a librarian who understands what you mean. BM25 is a librarian who reads the exact words on the spine. RRF is asking both and trusting whichever one agrees most.
+
+---
+
+### Why service importance weighting
+
+**The problem without it:** In a multi-service codebase, the largest service (by symbol count) tends to dominate retrieval results — not because it's the right answer, but because it has the most vectors. A global expansion connector with 8,000 nodes and zero production traffic today would outscore a core payment processor with 2,000 nodes, simply because the search space is larger.
+
+**The fix:** Each service gets a `traffic_weight` in `config.yaml` (0.0 to 1.0). This scalar is multiplied into retrieval scores before final ranking. A service marked `traffic_weight: 0.3` contributes proportionally less to results for queries where multiple services are candidates.
+
+**The learning:** This came from observing that a global expansion connector with ~8K symbols and good graph centrality kept appearing in results for region-specific queries — despite having zero production traffic in that region. It was the right shape but the wrong service. Setting `traffic_weight: 0.3` for that service eliminated the noise.
+
+---
+
+### Why adaptive sampling in cluster summarisation (Stage 4)
+
+**The problem with fixed sampling:** Stage 4 sends a sample of a cluster's nodes to an LLM for summarisation. With a fixed limit of 80 nodes and a cluster containing 820 modules, the sample was chosen by shuffling all modules randomly and taking one node from each until 80 were collected.
+
+**What happened in practice:** The lottery had 820 entrants. There were 30+ individual gateway integration modules (each ~200–350 nodes) and 4 core transaction orchestration modules. Statistically, the sample contained ~4× more gateway integration than core business logic. The resulting LLM summary said the cluster was "a multi-provider payment orchestrator integrating 15+ gateways" — technically accurate but missing the mandate execution, retry logic, txn state machine, and split payment flows entirely.
+
+**The fix has three parts:**
+1. **Adaptive sample size:** For a cluster with 820 modules, sample `min(300, 820 // 3) = 273` nodes, not 80.
+2. **Priority ordering:** Modules whose names contain `Product`, `OLTP`, `Flow`, `Handler`, `Transaction`, `Mandate`, `Payment`, `Routing` are sampled first, at 2× density.
+3. **Boilerplate suppression:** Modules named `*.Lenses`, `Config.Constants`, `*.Shims`, `*.Generated` are sampled last, at ¼ density. These are auto-generated or mechanical files — no business logic lives there.
+
+**The analogy:** If you need to understand what a hospital does, you interview doctors and nurses first. The lottery approach would give an equal chance to the boilerplate administrative forms as to the surgical team.
+
+---
+
+### Why parallel extraction (Stage 1)
+
+Services in a multi-service codebase are completely independent data sources — no service's symbols depend on another service's symbols being parsed first. The original implementation processed them sequentially (one service, then the next), leaving N-1 cores idle.
+
+Using `multiprocessing.Pool` with one worker per service means all services parse concurrently. On a 24-core machine with 13 services, all 13 run simultaneously. Wall time drops from ~hours to ~minutes.
+
+**Important constraint:** The merge (combining all symbol lists, deduplication, caller index, writing outputs) still happens in the main process after all workers complete. This is intentional — merging requires a global view that no individual worker has.
+
+---
+
+### Why the body store is a separate file
+
+When the serve layer starts, it loads the symbol graph (nodes + edges) into memory — this enables graph traversal, vector search, and keyword search. The graph JSON for 114K symbols is ~250MB. That's acceptable to keep resident.
+
+The body store (full source text of every function) adds another ~50MB+ and is never needed unless a user explicitly requests `get_function_body`. Loading it at startup wastes memory and slows startup for a capability that is used in a minority of queries.
+
+Solution: body store is loaded separately and accessed by key. Tools that don't need source text pay zero cost. Tools that do (`get_function_body`, `get_context`) read from it on demand.
+
+---
+
+### Why co-change beats call graph for cross-service coupling
+
+For calls *within* a service (in-process function calls), the static call graph is authoritative. But services in a real system communicate over HTTP — and no static analysis can trace an HTTP boundary without knowing the runtime URL and routing table.
+
+Co-change analysis sidesteps this entirely. If module A in service X and module B in service Y always change in the same commit, they are coupled — regardless of *how* they communicate. The coupling is observable in git history without understanding the runtime topology.
+
+This is particularly valuable for blast-radius analysis: "if I change this module, what else do I need to test?" The answer from co-change is empirical (what *has* broken together historically), not theoretical (what *could* break given the type system).
+
+---
+
+### Enterprise calibration vs. single-repo findings
+
+Several published retrieval benchmarks recommend capping search results at K=5–8, citing precision degradation beyond that point. Those benchmarks were conducted on single repositories with < 50K symbols.
+
+In a multi-service enterprise codebase with 12+ services and 100K+ symbols:
+- Relevant code may genuinely span 3–4 services
+- A cap of 5 often excludes the right answer entirely
+- The signal-to-noise problem is about *service bias*, not *total count*
+
+The right fix for enterprise is **stratification** (cap per service, not per query) and **density thresholds** (drop results that score below 60% of the top result) — not reducing the total cap. This was an explicit decision to reject the benchmark recommendation as inapplicable to the target environment.
 
 ---
 
@@ -589,6 +771,12 @@ Import edges connect module *names*, not function IDs. G is a symbol-level graph
 
 **Why stratified vector search?**
 Without stratification, nearest-neighbour search returns results biased toward the largest service (most symbols). Stratification caps results per service before final ranking, ensuring all services get representation regardless of size.
+
+**Why BM25 + RRF alongside vector search?**
+Dense vector search excels at semantic similarity but can miss exact symbol name matches (e.g. `TxnSplitDetail`, `createPaymentLink`). BM25 scores rare identifiers highly using IDF weighting. Reciprocal Rank Fusion (RRF, k=60) merges both ranked lists without hand-tuned weights — each document scores `Σ 1/(60 + rank_i)` across retrieval methods. The combined result handles both "what handles retry logic?" (semantic) and "find TxnSplitDetail" (exact) correctly.
+
+**Service importance weighting**
+Each service in `config.yaml` has a `traffic_weight` (0.0–1.0) reflecting its production significance. This biases retrieval toward high-traffic services (e.g. the core transaction orchestrator) over low-traffic ones (e.g. a global expansion connector with zero production traffic today), preventing large-but-irrelevant services from monopolising results.
 
 ---
 

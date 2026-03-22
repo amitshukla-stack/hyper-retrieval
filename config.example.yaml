@@ -60,33 +60,60 @@ embed:
 artifact_dir: "/path/to/your/workspace/artifacts"
 
 # ── Services (list all microservices in your codebase) ───────────────────────
+# One entry per top-level directory under source_dir.
+# These are used for service-aware retrieval stratification.
 services:
-  - euler-api-gateway
-  - euler-api-txns
-  - UCS
-  - euler-db
-  - euler-api-order
-  - graphh
-  - euler-api-pre-txn
-  - euler-api-customer
-  - basilisk-v3
-  - euler-drainer
-  - token_issuer_portal_backend
-  - haskell-sequelize
+  - payment-core        # example: core transaction orchestrator
+  - api-gateway         # example: external-facing API gateway
+  - order-service       # example: order management
+  - data-layer          # example: shared persistence / ORM library
+  - fraud-service       # example: risk and fraud detection
 
-# ── Keyword allowlist (short terms that matter in your domain) ────────────────
+# ── Service profiles (optional but recommended for large codebases) ───────────
+# role:           orchestrator | connector | entry_point | persistence | worker
+# traffic_weight: 0.0–1.0 — relative production importance.
+#                 High-traffic services score higher in retrieval.
+#                 Set to 0.3 for services with low/no traffic in target region.
+# region:         any label — used as metadata in summaries and retrieval context
+service_profiles:
+  payment-core:
+    role:           orchestrator
+    traffic_weight: 1.0
+    region:         global
+    description:    "Owns transaction lifecycle. Every payment passes through here."
+  api-gateway:
+    role:           connector
+    traffic_weight: 0.85
+    region:         global
+    description:    "External-facing API layer. High production traffic."
+  order-service:
+    role:           entry_point
+    traffic_weight: 0.75
+    region:         global
+    description:    "Order management. Routes to payment-core for transaction processing."
+  data-layer:
+    role:           persistence
+    traffic_weight: 0.65
+    region:         global
+    description:    "Shared data access layer. All services depend on this."
+  fraud-service:
+    role:           worker
+    traffic_weight: 0.40
+    region:         global
+    description:    "Risk and fraud detection."
+
+# ── Keyword allowlist (short domain terms that bypass the stopword filter) ────
+# Add any terms shorter than 4 chars or domain-specific abbreviations
+# that should never be filtered from keyword search.
+# Examples for a fintech platform:
 kw_allowlist:
-  - upi
-  - pix
-  - emi
-  - ucs
-  - cvv
-  - pan
-  - otp
-  - kyc
-  - bnpl
-  - nfc
-  - qr
+  - upi    # payment method
+  - emi    # instalment plan
+  - cvv    # card security
+  - otp    # one-time password
+  - kyc    # know your customer
+  - bnpl   # buy now pay later
+  # Add your own domain terms here
 
 # ── Persona overrides (optional) ────────────────────────────────────────────
 # Uncomment and edit to customize for your codebase:

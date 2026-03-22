@@ -42,12 +42,13 @@ Once indexed, the same data powers multiple entry points — all shipped in this
 
 ## Language support
 
-| Language | Symbols | Bodies | Call graph | Log patterns |
-|----------|---------|--------|------------|--------------|
-| Haskell  | ✓       | ✓      | ✓ (approx) | ✓            |
-| Rust     | ✓       | ✓      | ✓          | ✓            |
-| Python   | ✓       | ✓      | ✓ (AST)    | —            |
-| Groovy   | ✓       | ✓      | —          | ✓            |
+| Language       | Symbols | Bodies | Call graph | Log patterns |
+|----------------|---------|--------|------------|--------------|
+| Haskell        | ✓       | ✓      | ✓ (approx) | ✓            |
+| Rust           | ✓       | ✓      | ✓          | ✓            |
+| JavaScript/TypeScript | ✓ | ✓   | ✓ (AST)    | —            |
+| Python         | ✓       | ✓      | ✓ (AST)    | —            |
+| Groovy         | ✓       | ✓      | —          | ✓            |
 
 Adding a new language means implementing `parse_<lang>_file()` in `build/01_extract.py` — see [Adding a language parser](#adding-a-language-parser).
 
@@ -59,7 +60,7 @@ Adding a new language means implementing `parse_<lang>_file()` in `build/01_extr
 hyperretrieval/
 ├── build/                     ← 8-stage pipeline (run once to build indexes)
 │   ├── 01_extract.py          ← Parse source → symbols, bodies, call graph, log patterns
-│   │                             Tree-sitter for Haskell/Rust/Groovy; ast module for Python
+│   │                             Tree-sitter for Haskell/Rust/JS/TS/Groovy; ast for Python
 │   │                             Parallel across services (multiprocessing.Pool)
 │   ├── 02_build_graph.py      ← Build NetworkX graph, Leiden clustering at module level
 │   ├── 03_embed.py            ← GPU-batch embed all symbols → LanceDB (vectors.lance)
@@ -68,29 +69,32 @@ hyperretrieval/
 │   │                             modules (Product, OLTP, Flow, Handler) sampled first
 │   ├── 05_package.py          ← Copy final artifacts into workspace/artifacts/
 │   ├── 06_build_cochange.py   ← Parse git history → co-change index (streaming, O(1) memory)
-│   ├── 07_chunk_docs.py       ← Chunk + embed markdown docs into docs.lance
-│   ├── 08_generate_arch_docs.py ← Auto-generate architecture docs via LLM
+│   ├── 07_chunk_docs.py       ← Chunk + embed markdown docs → docs.lance via embed server
+│   │                             Reads docs/ and docs/generated/ from workspace
+│   ├── 08_generate_arch_docs.py ← [BETA] Auto-generate architecture docs via LLM
 │   │                             Generate → Verify → Correct loop, saves to docs/generated/
+│   │                             See file header for known issues and improvement TODOs
 │   └── run_pipeline.sh        ← Run all stages end-to-end
 │                                 Flags: --from-stage N, --only-stage N
 │                                 Auto-cleans stale outputs before each run
+│                                 Stage order: 1→2→3→4→5→6→8→7 (8 before 7 so generated
+│                                 docs are embedded by stage 7)
 │
-├── serve/                     ← Proprietary engine — orgs never modify this
-│   ├── retrieval_engine.py    ← Core library: loads all indexes, graph traversal, vector search
+├── serve/                     ← Core engine — all retrieval logic lives here
+│   ├── retrieval_engine.py    ← Core library: loads all indexes, graph traversal,
+│   │                             BM25 + vector RRF fusion search, co-change queries
 │   ├── embed_server.py        ← Shared embedding server (port 8001) — start FIRST
 │   ├── mcp_server.py          ← MCP SSE server (port 8002) — 8 tools for AI agents
+│   ├── pr_analyzer.py         ← CLI blast-radius report for CI/CD pipelines
 │   ├── public/                ← Chainlit CSS + theme
 │   └── .chainlit/             ← Chainlit config (name, layout, CSS path)
 │
-├── tools.py                   ← Org-customizable: AGENT_TOOLS, TOOL_DISPATCH, tool_* functions,
-│                                 persona prompts, run_agent_loop_sync. Imports retrieval_engine.
-│
-├── apps/
-│   ├── chat/demo_server_v6.py ← Chainlit chat UI (port 8000) — run from apps/chat/
-│   └── cli/pr_analyzer.py     ← CLI blast-radius report for CI/CD pipelines
+├── tools.py                   ← Org-customizable tool implementations (gitignored)
+│                                 AGENT_TOOLS, TOOL_DISPATCH, persona prompts
+│                                 Uses RE.unified_search() for BM25+vector RRF fusion
 │
 ├── tools/
-│   └── generate_mindmap.py    ← Visualise the graph as an HTML mindmap
+│   └── generate_mindmap.py    ← Visualise the graph as an HTML mindmap (WebGL)
 │
 ├── tests/
 │   ├── test_01_artifacts.py   ← Verify build outputs exist and are non-empty
@@ -221,10 +225,10 @@ cd ~/projects/hyperretrieval/serve
 python3 embed_server.py
 # Wait for: [embed_server] Ready on 127.0.0.1:8001
 
-# 2. Chat UI
+# 2. Chat UI  (demo_server_v6.py is org-specific — gitignored, copy from template)
 export EMBED_SERVER_URL=http://localhost:8001
 export ARTIFACT_DIR=~/projects/workspaces/YOUR_ORG/artifacts
-cd ~/projects/hyperretrieval/apps/chat
+cd ~/projects/hyperretrieval/serve
 chainlit run demo_server_v6.py --port 8000
 # Open http://localhost:8000
 
@@ -305,15 +309,17 @@ Works with Claude Code, Cursor, and Windsurf.
 
 **Optimal chain:** `search_modules → get_module → get_function_body → trace_callees`
 
+**Retrieval:** `search_symbols` uses BM25 + dense vector **RRF fusion** (`unified_search`). Results are ranked by Reciprocal Rank Fusion across both signals — keyword hits for exact identifiers, vector search for semantic similarity. Co-change data is added as a structural coupling signal on top.
+
 ---
 
 ## PR blast-radius analysis
 
 ```bash
-git diff main...HEAD --name-only | python3 apps/cli/pr_analyzer.py
-python3 apps/cli/pr_analyzer.py --files src/Routes.hs src/Gateway.hs
-git diff main...HEAD --name-only | python3 apps/cli/pr_analyzer.py --format json
-git diff main...HEAD --name-only | python3 apps/cli/pr_analyzer.py --check security
+git diff main...HEAD --name-only | python3 serve/pr_analyzer.py
+python3 serve/pr_analyzer.py --files src/Routes.hs src/Gateway.hs
+git diff main...HEAD --name-only | python3 serve/pr_analyzer.py --format json
+git diff main...HEAD --name-only | python3 serve/pr_analyzer.py --check security
 ```
 
 ---

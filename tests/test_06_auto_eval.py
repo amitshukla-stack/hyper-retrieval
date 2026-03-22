@@ -30,9 +30,9 @@ from collections import defaultdict
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "serve"))
 
-PIPELINE   = pathlib.Path("/home/beast/projects/mindmap/pipeline")
-ALL_REPOS  = pathlib.Path("/home/beast/projects/mindmap/all_repos")
-GENERATED  = pathlib.Path(__file__).parent / "generated"
+_WS       = pathlib.Path(os.environ.get("WORKSPACE_DIR", "/home/beast/projects/workspaces/juspay"))
+ALL_REPOS = pathlib.Path(os.environ.get("SOURCE_DIR",   str(_WS / "source")))
+GENERATED = pathlib.Path(__file__).parent / "generated"
 CASES_FILE = GENERATED / "eval_cases.json"
 RESULTS_FILE = GENERATED / "eval_results.json"
 
@@ -586,8 +586,9 @@ if args.report_only:
 # ── Load retrieval engine ───────────────────────────────────────────────────
 print(f"\n{BOLD}Loading retrieval engine (no GPU)...{NC}")
 os.environ["EMBED_SERVER_URL"] = ""
+_artifact_dir = pathlib.Path(os.environ.get("ARTIFACT_DIR", str(_WS / "artifacts")))
 import retrieval_engine as RE
-RE.initialize(load_embedder=False)
+RE.initialize(artifact_dir=_artifact_dir, load_embedder=False)
 print("Ready.\n")
 
 # Build lookup dicts

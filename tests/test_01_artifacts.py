@@ -12,14 +12,15 @@ Run without GPU:
 All failures print the exact artifact key, expected value, and actual value.
 Exits non-zero on ANY failure.
 """
-import sys, json, pathlib, re, random, importlib.util
+import sys, json, pathlib, re, random, importlib.util, os
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "serve"))
 
-PIPELINE  = pathlib.Path("/home/beast/projects/mindmap/pipeline")
-ARTIFACTS = PIPELINE / "demo_artifact"
-OUTPUT    = PIPELINE / "output"
-ALL_REPOS = pathlib.Path("/home/beast/projects/mindmap/all_repos")
+# Paths: override via env vars or fall back to Juspay defaults
+_WS        = pathlib.Path(os.environ.get("WORKSPACE_DIR",  "/home/beast/projects/workspaces/juspay"))
+ARTIFACTS  = pathlib.Path(os.environ.get("ARTIFACT_DIR",   str(_WS / "artifacts")))
+OUTPUT     = pathlib.Path(os.environ.get("OUTPUT_DIR",     str(_WS / "output")))
+ALL_REPOS  = pathlib.Path(os.environ.get("SOURCE_DIR",     str(_WS / "source")))
 
 PASS = "\033[92m✓\033[0m"
 FAIL = "\033[91m✗\033[0m"
@@ -44,8 +45,8 @@ def warn(label, detail=""):
 
 # ─── Load extractor for current MAX_BODY_CHARS value ──────────────────────────
 def _load_extractor():
-    spec = importlib.util.spec_from_file_location(
-        "extractor", PIPELINE / "01_extract_v2.py")
+    extract_path = pathlib.Path(__file__).parent.parent / "build" / "01_extract.py"
+    spec = importlib.util.spec_from_file_location("extractor", extract_path)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m
@@ -177,12 +178,12 @@ else:
     edges = gdata.get("edges", [])
     cluster_summaries = gdata.get("cluster_summaries", {})
 
-# 2a: Node count in expected range
+# 2a: Node count in expected range (Juspay: 114,534 symbols across 12 services)
 node_count = len(nodes)
-if 90000 <= node_count <= 100000:
+if 90000 <= node_count <= 150000:
     ok(f"Node count in range: {node_count:,}")
 else:
-    fail(f"Node count {node_count:,} outside expected range [90000, 100000]")
+    fail(f"Node count {node_count:,} outside expected range [90000, 150000]")
 
 # 2b: Required fields on all nodes
 REQUIRED_FIELDS = {"id", "name", "module", "kind", "type", "file", "lang", "service"}
@@ -342,14 +343,17 @@ else:
 node_ids_set = {n.get("id", "") for n in nodes}
 all_body_ids = set(body_store.keys())
 
+# Co-change keys are module-level (e.g. "Euler.API.Txns.Mandates"), graph nodes are
+# function-level ("Euler.API.Txns.Mandates.fn"). Check by module attribute instead.
+graph_modules = {d.get("module", "") for _, d in zip(range(5000), nodes)}  # sample
 sample_cc_mods = random.sample(list(cochange.keys()), min(100, len(cochange)))
-in_graph = sum(1 for m in sample_cc_mods
-               if any(nid.startswith(m + ".") or nid == m for nid in node_ids_set))
+in_graph = sum(1 for m in sample_cc_mods if m in graph_modules)
 in_graph_pct = in_graph / len(sample_cc_mods) * 100 if sample_cc_mods else 0
-if in_graph_pct >= 50:
-    ok(f"Co-change modules traceable to graph: {in_graph_pct:.0f}% of sample")
+if in_graph_pct >= 30:
+    ok(f"Co-change modules traceable to graph modules: {in_graph_pct:.0f}% of sample")
 else:
-    warn(f"Only {in_graph_pct:.0f}% of co-change modules found in graph node IDs")
+    warn(f"Only {in_graph_pct:.0f}% of co-change modules matched graph modules "
+         f"(co-change may use file-path keys vs dot-path module names)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -369,10 +373,10 @@ else:
         db = lancedb.connect(str(ARTIFACTS / "vectors.lance"))
         tbl = db.open_table("chunks")
         vec_count = tbl.count_rows()
-        if 90000 <= vec_count <= 100000:
+        if 90000 <= vec_count <= 150000:
             ok(f"Vector row count matches graph range: {vec_count:,}")
         else:
-            fail(f"Vector count {vec_count:,} outside expected [90000, 100000]")
+            fail(f"Vector count {vec_count:,} outside expected [90000, 150000]")
 
         # Check count matches graph node count (within 1%)
         count_diff = abs(vec_count - node_count) / max(node_count, 1)

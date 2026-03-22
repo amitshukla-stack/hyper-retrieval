@@ -18,14 +18,14 @@ This test catches:
 Run:
     python3 tests/test_03_canary.py
 """
-import sys, json, pathlib, re
+import sys, json, pathlib, re, os
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "serve"))
 
-PIPELINE   = pathlib.Path("/home/beast/projects/mindmap/pipeline")
-OUTPUT     = PIPELINE / "output"
-ARTIFACTS  = PIPELINE / "demo_artifact"
-ALL_REPOS  = pathlib.Path("/home/beast/projects/mindmap/all_repos")
+_WS       = pathlib.Path(os.environ.get("WORKSPACE_DIR", "/home/beast/projects/workspaces/juspay"))
+OUTPUT    = pathlib.Path(os.environ.get("OUTPUT_DIR",    str(_WS / "output")))
+ARTIFACTS = pathlib.Path(os.environ.get("ARTIFACT_DIR", str(_WS / "artifacts")))
+ALL_REPOS = pathlib.Path(os.environ.get("SOURCE_DIR",   str(_WS / "source")))
 
 PASS = "\033[92m✓\033[0m"
 FAIL = "\033[91m✗\033[0m"

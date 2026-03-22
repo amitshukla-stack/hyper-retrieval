@@ -1,5 +1,33 @@
 """
-Stage 8 — Auto-generate architecture docs from the code index.
+Stage 8 — Auto-generate architecture docs from the code index.  [BETA]
+
+⚠️  BETA FUNCTIONALITY — Known issues and TODOs:
+
+  WHAT WORKS:
+  - Domain discovery from cluster summaries (when Kimi returns JSON)
+  - Generating readable architecture docs with Kimi
+  - Verify loop correctly finds refs in body_store when LLM uses FQ IDs
+  - Regen mode loading domains from meta.json (avoids discover hallucination)
+  - Fixed: sig_lines now uses n.get("id") for fully-qualified node IDs in generate context
+
+  KNOWN ISSUES / TODO:
+  - Kimi frequently outputs reasoning text instead of JSON in discover() and generate()
+    → Need retry logic with exponential backoff + explicit "no reasoning" system prompt
+  - Verify loop finds 0 refs for many docs because Kimi often uses short names (e.g. `run_probe`)
+    instead of fully-qualified IDs (e.g. `Euler.API.Txns.Flow.handleTxn`) in generated text
+    → generate prompt says to use FQ IDs but Kimi ignores this for some domains
+    → TODO: post-process generated doc to expand short names to FQ before verify
+  - mandate_lifecycle domain was too narrow (Itau/Brazil focus only, missed general mandate system)
+    → Better seed_clusters needed; or split into mandate_itau + mandate_general
+  - connector_testing_framework had no FQ refs — Kimi used CLI tool names (grpcurl, run_probe)
+    → seed_clusters for UCS service need to produce Rust :: style IDs in sig_lines context
+  - SKIP_IF_EXISTS=0 regen mode: discover() still called for NEW domains (fine), but when
+    all existing docs are listed as "skip", Kimi returns [] — partially fixed by meta.json load
+  - wallet_loyalty_operations.md was NOT regenerated in the last regen pass (22:26 timestamp,
+    pre-dates the 22:41 regen run) — investigate why it was skipped
+  - docs with accuracy_score=1.0 and iters=1 where 0 refs were checkable are unverified,
+    not actually accurate; score is misleading
+    → TODO: distinguish "verified accurate" from "unverifiable" in meta.json
 
 Uses Kimi LLM to:
   1. DISCOVER: identify major business domains from cluster summaries

@@ -16,20 +16,44 @@ llm:
   # base_url: "https://api.openai.com/v1"
   # model:    "gpt-4o"
 
-# ── Embedding model ───────────────────────────────────────────────────────────
+# ── Embedding ─────────────────────────────────────────────────────────────────
+# All servers connect to the embed_server via server_url — never load models directly.
+# Start embed_server.py first, then set EMBED_SERVER_URL in all other processes.
 embed:
-  # Option A: shared embed server (recommended — avoids GPU conflicts)
-  server_url: "http://localhost:8001"
+  server_url: "http://localhost:8001"   # set EMBED_SERVER_URL to this value
 
-  # Option B: load model in-process (comment out server_url)
-  # model_path: "/path/to/models/qwen3-embed-8b"
+  # ── Choose ONE provider for embed_server.py ──────────────────────────────
+  #
+  # IMPORTANT: embedding dimension varies by provider.
+  # If you change provider, you must re-run build/03_embed.py to rebuild vectors.lance.
+  #
+  # Provider      Model                       Dim   GPU needed   Cost
+  # ------------- --------------------------- ----- ------------ ------
+  # local         qwen3-embed-8b              4096  Yes (~6GB)   Free
+  # openai        text-embedding-3-large      3072  No           Paid
+  # openai        text-embedding-3-small      1536  No           Paid (cheaper)
+  # cohere        embed-english-v3.0          1024  No           Paid
+  # voyage        voyage-code-3               1024  No           Paid (best for code)
+  # jina          jina-embeddings-v3          1024  No           Paid
+  # ollama        nomic-embed-text             768  No           Free (local CPU)
+  # ollama        mxbai-embed-large           1024  No           Free (local CPU)
+  #
+  provider: "local"                     # set EMBED_PROVIDER env var to this value
+  model: ""                             # set EMBED_PROVIDER_MODEL to override default
 
-  # Custom instruction prefix for your codebase
+  # Provider API keys (set as env vars — do not commit real keys)
+  # openai_api_key:  "${OPENAI_API_KEY}"
+  # cohere_api_key:  "${COHERE_API_KEY}"
+  # voyage_api_key:  "${VOYAGE_API_KEY}"
+  # jina_api_key:    "${JINA_API_KEY}"
+  # ollama_base_url: "http://localhost:11434"
+
+  # Custom instruction prefix (used only for local Qwen3 — providers use native query types)
   instruction: "Instruct: Represent this code module for finding semantically similar components. Query: "
 
 # ── Artifact directory ────────────────────────────────────────────────────────
 # Where to find: graph_with_summaries.json, vectors.lance, output/
-artifact_dir: "/home/beast/projects/mindmap/pipeline/demo_artifact"
+artifact_dir: "/home/beast/projects/workspaces/juspay/artifacts"
 
 # ── Services (list all microservices in your codebase) ───────────────────────
 services:

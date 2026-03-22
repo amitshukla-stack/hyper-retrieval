@@ -17,7 +17,10 @@ import retrieval_engine as RE
 
 # ── Config ────────────────────────────────────────────────────────────────────
 _HERE          = pathlib.Path(__file__).resolve().parent
-ARTIFACT_DIR   = _HERE / "demo_artifact" if (_HERE / "demo_artifact").exists() else _HERE
+ARTIFACT_DIR   = pathlib.Path(os.environ.get(
+    "ARTIFACT_DIR",
+    str(_HERE / "demo_artifact" if (_HERE / "demo_artifact").exists() else _HERE)
+))
 LLM_API_KEY    = os.environ.get("KIMI_API_KEY",  "REDACTED")
 LLM_BASE_URL   = os.environ.get("KIMI_BASE_URL", "https://grid.ai.juspay.net")
 LLM_MODEL      = os.environ.get("KIMI_MODEL",    "kimi-latest")

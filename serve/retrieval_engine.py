@@ -31,7 +31,10 @@ EMBED_INSTRUCTION = (
 )
 
 # ── Default artifact dir ───────────────────────────────────────────────────────
-_DEFAULT_ARTIFACT_DIR = pathlib.Path(__file__).parent / "demo_artifact"
+_DEFAULT_ARTIFACT_DIR = pathlib.Path(
+    os.environ.get("ARTIFACT_DIR",
+                   str(pathlib.Path(__file__).parent / "demo_artifact"))
+)
 
 # ── Global state ───────────────────────────────────────────────────────────────
 embedder:      object = None   # SentenceTransformer (loaded in-process, or None if using embed server)
@@ -547,7 +550,8 @@ def initialize(
 
     GRAPH_PATH     = str(artifact_dir / "graph_with_summaries.json")
     LANCE_PATH     = str(artifact_dir / "vectors.lance")
-    EMBED_MODEL    = str(artifact_dir.parent / "models" / "qwen3-embed-8b")
+    EMBED_MODEL    = os.environ.get("EMBED_MODEL",
+                                str(artifact_dir.parent / "models" / "qwen3-embed-8b"))
     BODY_STORE_P   = artifact_dir.parent / "output" / "body_store.json"
     CALL_GRAPH_P   = artifact_dir.parent / "output" / "call_graph.json"
     LOG_PATTERNS_P = artifact_dir.parent / "output" / "log_patterns.json"

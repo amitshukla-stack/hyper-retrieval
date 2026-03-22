@@ -1,10 +1,3 @@
-# Large data artifacts
-demo_artifact/
-git_history_export.json
-git_history_split/
-models/
-output/
-
 # Python
 __pycache__/
 *.pyc
@@ -12,18 +5,23 @@ __pycache__/
 *.pyd
 *.egg-info/
 dist/
-build/
 .venv/
 .env
 
 # Logs / temp
 *.log
 *.jsonl
-/tmp/
 
-# Chainlit state
-.chainlit/
-.files/
+# Chainlit runtime state
+serve/.chainlit/
+serve/.files/
 
-# Lance DB
+# Workspace data (lives in ~/projects/workspaces/, not in this repo)
+workspaces/
+demo_artifact/
+models/
+output/
+git_history_export.json
+git_history_split/
 *.lance/
+*.npy

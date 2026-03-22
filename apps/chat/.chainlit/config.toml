@@ -3,7 +3,9 @@
 user_env = []
 
 # Duration (in seconds) during which the session is saved when the connection is lost
-session_timeout = 3600
+# Set to 30 — enough to survive a brief network blip, but a deliberate reload
+# always starts a fresh session (welcome screen, no old message replay).
+session_timeout = 30
 
 # Duration (in seconds) of the user session expiry
 user_session_timeout = 1296000  # 15 days
@@ -56,19 +58,10 @@ reaction_on_message_received = false
 
 # Authorize users to spontaneously upload files with messages
 [features.spontaneous_file_upload]
-    enabled = true
-    # Define accepted file types using MIME types
-    # Examples:
-    # 1. For specific file types:
-    #    accept = ["image/jpeg", "image/png", "application/pdf"]
-    # 2. For all files of certain type:
-    #    accept = ["image/*", "audio/*", "video/*"]
-    # 3. For specific file extensions:
-    #    accept = { "application/octet-stream" = [".xyz", ".pdb"] }
-    # Note: Using "*/*" is not recommended as it may cause browser warnings
-    accept = ["*/*"]
-    max_files = 20
-    max_size_mb = 500
+    enabled = false
+    accept = ["text/plain", "text/x-haskell", "text/x-rustsrc", "application/json"]
+    max_files = 5
+    max_size_mb = 10
 
 [features.audio]
     # Enable audio features
@@ -97,7 +90,7 @@ reaction_on_message_received = false
 # Name of the assistant.
 name = "Juspay-Code"
 
-# default_theme = "dark"
+default_theme = "dark"
 
 # Force a specific language for all users (e.g., "en-US", "he-IL", "fr-FR")
 # If not set, the browser's language will be used
@@ -124,7 +117,7 @@ cot = "full"
 
 # Specify a CSS file that can be used to customize the user interface.
 # The CSS file can be served from the public directory or via an external link.
-custom_css = "/public/style.css"
+custom_css = "/public/style.css?v=1001"
 
 # Specify additional attributes for a custom CSS file
 # custom_css_attributes = "media=\"print\""
@@ -153,10 +146,10 @@ alert_style = "classic"
 # custom_meta_image_url = "https://chainlit-cloud.s3.eu-west-3.amazonaws.com/logo/chainlit_banner.png"
 
 # Load assistant logo directly from URL.
-logo_file_url = ""
+# logo_file_url = ""
 
 # Load assistant avatar image directly from URL.
-default_avatar_file_url = ""
+# default_avatar_file_url = ""
 
 # Avatar size in pixels (default: 20).
 # avatar_size = 20

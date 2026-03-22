@@ -20,6 +20,7 @@ Run:
 """
 import sys, json, pathlib, re
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "serve"))
 
 PIPELINE   = pathlib.Path("/home/beast/projects/mindmap/pipeline")
 OUTPUT     = PIPELINE / "output"

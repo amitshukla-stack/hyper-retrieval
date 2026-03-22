@@ -28,6 +28,7 @@ import sys, json, pathlib, random, os, re, argparse, time, textwrap
 from collections import defaultdict
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "serve"))
 
 PIPELINE   = pathlib.Path("/home/beast/projects/mindmap/pipeline")
 ALL_REPOS  = pathlib.Path("/home/beast/projects/mindmap/all_repos")

@@ -20,54 +20,82 @@
   --jp-cyan:      #00D1FF;
   --jp-bg:        #080808;
   --jp-surface:   #0f0f0f;
-  --jp-surface2:  #141414;
-  --jp-border:    rgba(255,255,255,0.06);
-  --jp-border2:   rgba(255,255,255,0.10);
-  --jp-muted:     #555;
-  --jp-muted2:    #888;
-  --jp-text:      #d4d4d4;
-  --jp-radius:    10px;
-  --jp-radius-sm: 6px;
+  --jp-surface2:  #161616;
+  --jp-border:    rgba(255,255,255,0.08); /* slight adjust */
+  --jp-border2:   rgba(255,255,255,0.12);
+  --jp-muted:     #8e8e8e; 
+  --jp-muted2:    #a0a0a0; 
+  --jp-text:      #e3e3e3; 
+  --jp-radius:    16px;
+  --jp-radius-sm: 8px;
+}
+
+* {
+  --jp-font: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+body, #root, .MuiTypography-root, .MuiBox-root {
+  background-color: var(--jp-bg) !important;
+  color: var(--jp-text) !important;
+  font-family: var(--jp-font) !important;
+}
+
+ul, ol, li, p, span, div {
+  font-family: var(--jp-font) ;
+}
+
+.markdown p, .markdown ul, .markdown li, .markdown h1, .markdown h2, .markdown h3, .markdown span, .markdown div, .markdown table {
+  font-family: var(--jp-font) !important;
 }
 
 /* ── Hide Chainlit branding ─────────────────────────────────────────────── */
 a[href*="chainlit.io"] { display: none !important; }
 
 /* ── Welcome screen ─────────────────────────────────────────────────────── */
-#welcome-screen img,
-#welcome-screen svg { display: none !important; }
+#welcome-screen > img,
+#welcome-screen > svg,
+#welcome-screen > div > img,
+#welcome-screen > div > svg { display: none !important; }
 
 #welcome-screen {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 20px !important;
+  margin-bottom: 24px !important;
 }
 
 #welcome-screen::before {
-  content: "JUSPAY | CODE";
+  content: "JUSPAY | CODE" !important;
   font-family: 'JetBrains Mono', monospace !important;
-  font-size: 18px;
-  font-weight: 500;
-  letter-spacing: 0.35em;
-  color: var(--jp-cyan);
+  font-size: 24px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.35em !important;
+  color: var(--jp-cyan) !important;
+  background: none !important;
+  -webkit-text-fill-color: var(--jp-cyan) !important;
+  margin-bottom: 8px !important;
 }
 
 #welcome-screen::after {
-  content: "payment platform intelligence";
-  font-size: 11px;
-  letter-spacing: 0.18em;
-  color: var(--jp-muted);
+  content: "payment platform intelligence" !important;
+  font-family: var(--jp-font) !important;
+  font-size: 13px !important;
+  letter-spacing: 0.2em !important;
+  color: var(--jp-muted) !important;
+  font-weight: 400 !important;
 }
 
 /* ── Starter cards ──────────────────────────────────────────────────────── */
 .starter {
-  border-radius: var(--jp-radius-sm) !important;
+  border-radius: 16px !important;
   border: 1px solid var(--jp-border) !important;
   background: var(--jp-surface) !important;
   transition: border-color 0.2s ease, background 0.2s ease !important;
   font-size: 13px !important;
+  padding: 10px 18px !important;
+  margin: 4px !important;
 }
 .starter:hover {
   border-color: rgba(0, 209, 255, 0.35) !important;
@@ -96,14 +124,16 @@ a[href*="chainlit.io"] { display: none !important; }
 
 /* ── Markdown content ───────────────────────────────────────────────────── */
 .markdown {
-  max-width: min(100%, 860px) !important;
+  max-width: min(100%, 820px) !important;   /* adjusted for Gemini reading ergonomics */
   width: 100% !important;
-  line-height: 1.7 !important;
+  line-height: 1.6 !important;
   color: var(--jp-text) !important;
-  font-size: 14px !important;
+  font-size: 15px !important;
+  font-family: var(--jp-font) !important;
 }
 
-@media (min-width: 1400px) { .markdown { max-width: 1000px !important; } }
+@media (min-width: 1400px) { .markdown { max-width: 1100px !important; } }
+@media (min-width: 1800px) { .markdown { max-width: 1280px !important; } }
 
 .markdown h1 {
   font-size: 18px !important; font-weight: 600; color: #f0f0f0 !important;
@@ -117,11 +147,10 @@ a[href*="chainlit.io"] { display: none !important; }
   font-size: 14px !important; font-weight: 600; color: #ddd !important; margin-top: 16px;
 }
 .markdown h4, .markdown h5 {
-  color: var(--jp-cyan) !important;
-  font-family: 'JetBrains Mono', monospace !important;
-  font-size: 11px !important;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  color: #b0b0b0 !important;
+  font-family: var(--jp-font) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
   margin-top: 14px;
 }
 
@@ -147,12 +176,12 @@ a[href*="chainlit.io"] { display: none !important; }
   overflow: hidden;
 }
 .markdown th {
-  background: rgba(0, 209, 255, 0.06) !important;
-  color: var(--jp-cyan) !important;
+  background: rgba(255,255,255,0.04) !important;  /* was cyan-tinted — neutral now */
+  color: #c0c0c0 !important;                       /* was cyan — reserved for interactive */
   font-family: 'JetBrains Mono', monospace !important;
-  font-size: 10.5px !important;
+  font-size: 11px !important;                      /* was 10.5px */
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   padding: 7px 12px !important;
   border: 1px solid var(--jp-border) !important;
   font-weight: 500;
@@ -163,27 +192,34 @@ a[href*="chainlit.io"] { display: none !important; }
   color: var(--jp-text);
 }
 .markdown tr:nth-child(even) td {
-  background: rgba(255,255,255,0.02) !important;
+  background: rgba(255,255,255,0.04) !important;  /* was 0.02 — invisible striping */
 }
 
 /* ── Code ───────────────────────────────────────────────────────────────── */
 pre {
-  border-radius: var(--jp-radius-sm) !important;
-  border: 1px solid var(--jp-border) !important;
+  border-radius: 12px !important;
+  border: 1px solid rgba(255, 255, 255, 0.05) !important;
   background: var(--jp-surface) !important;
-  padding: 14px 16px !important;
+  padding: 16px 20px !important;
   overflow-x: auto;
 }
-code {
+
+pre code {
   font-family: 'JetBrains Mono', monospace !important;
-  font-size: 12.5px !important;
+  font-size: 13.5px !important;
+  color: var(--jp-text) !important;
 }
+
+/* Subtle Slate Inline Code */
 :not(pre) > code {
-  background: rgba(255,255,255,0.07) !important;
-  border-radius: 3px !important;
-  padding: 1px 5px !important;
-  font-size: 12px !important;
-  color: #e0e0e0 !important;
+  background: rgba(255, 255, 255, 0.08) !important; 
+  border: none !important;
+  border-radius: 6px !important;
+  padding: 3px 6px !important;
+  font-size: 13.5px !important;
+  font-weight: 400 !important;
+  color: #e3e3e3 !important; 
+  font-family: 'JetBrains Mono', monospace !important;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -253,7 +289,7 @@ code {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 500px;
+  max-width: 720px;  /* was 500px — clips long module names */
 }
 
 /* Hide raw args input — too noisy */
@@ -266,29 +302,116 @@ code {
 .step .step { margin-left: 16px !important; }
 .step + .step { margin-top: 1px !important; }
 
-/* ── Input area ─────────────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════
+   INPUT BOX
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Outer sticky wrapper — no visual chrome, just layout */
 #chat-input {
-  background: rgba(8, 8, 8, 0.88) !important;
-  backdrop-filter: blur(12px) !important;
-  -webkit-backdrop-filter: blur(12px) !important;
-  border-top: 1px solid var(--jp-border) !important;
-  border-radius: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  border-top: none !important;
+  padding: 12px 0 18px !important;
+  position: sticky !important;
+  bottom: 0 !important;
+  z-index: 100 !important;
+  /* Fade the page content behind it rather than a hard border */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 18px) !important;
+  mask-image: linear-gradient(to bottom, transparent 0%, black 18px) !important;
 }
+
+/* The visual composer card — Chainlit's inner box */
+#chat-input > *,
+[class*="composer"],
+[class*="Composer"],
+[class*="inputBox"],
+[class*="input-box"],
+[class*="chat-input"] > div {
+  max-width: 820px !important;
+  margin: 0 auto !important;
+  width: calc(100% - 48px) !important;
+}
+
+/* The actual visual card */
+#chat-input [class*="composer"],
+#chat-input [class*="Composer"],
+#chat-input form,
+#chat-input > div > div {
+  background: var(--jp-surface) !important;
+  border: 1px solid rgba(255,255,255,0.08) !important;
+  border-radius: 28px !important;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.5), 0 1px 4px rgba(0,0,0,0.3) !important;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease !important;
+  padding: 8px 16px !important;
+  align-items: center !important;
+}
+
+#chat-input [class*="composer"]:focus-within,
+#chat-input [class*="Composer"]:focus-within,
+#chat-input form:focus-within,
+#chat-input > div > div:focus-within {
+  border-color: rgba(0, 209, 255, 0.35) !important;
+  box-shadow: 0 4px 28px rgba(0,0,0,0.6), 0 0 0 3px rgba(0,209,255,0.07) !important;
+}
+
+/* Textarea */
 #chat-input textarea {
-  font-size: 14px !important;
-  line-height: 1.5 !important;
+  font-size: 15px !important;
+  line-height: 1.6 !important;
+  color: var(--jp-text) !important;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  resize: none !important;
+  padding: 12px 14px !important;
+  font-family: var(--jp-font) !important;
+  min-height: 24px !important;
 }
-#chat-input button[type="submit"] {
-  border-radius: var(--jp-radius-sm) !important;
+
+#chat-input textarea::placeholder {
+  color: var(--jp-muted) !important;
+  font-size: 15px !important;
+}
+
+/* Submit button */
+#chat-input button {
+  border-radius: 8px !important;
+  width: 36px !important;
+  height: 36px !important;
+  min-width: 36px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: transparent !important;
+  color: var(--jp-text) !important;
+  border: none !important;
+  transition: all 0.15s ease !important;
+  margin: 4px !important;
+  flex-shrink: 0 !important;
+}
+
+#chat-input button svg {
+  display: block !important;
+}
+
+#chat-input button:hover {
+  background: rgba(255,255,255,0.1) !important;
+}
+
+#chat-input button:disabled {
+  background: transparent !important;
+  color: var(--jp-muted2) !important;
+  opacity: 0.5 !important;
+  pointer-events: none !important;
 }
 
 /* ── Scrollbar ──────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #242424; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: var(--jp-cyan); }
+::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #444; }
 
-/* ── Always pin input to bottom — prevent layout shift ──────────────────── */
+/* ── Layout: welcome screen fills space, input stays grounded ───────────── */
 [class]:has(> #chat-input) {
   display: flex !important;
   flex-direction: column !important;
@@ -297,9 +420,4 @@ code {
 #welcome-screen {
   flex: 1 1 auto !important;
   max-height: none !important;
-}
-#chat-input {
-  position: sticky !important;
-  bottom: 0 !important;
-  z-index: 100 !important;
 }

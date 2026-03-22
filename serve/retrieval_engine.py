@@ -13,6 +13,12 @@ then share one GPU load via HTTP — no OOM.
 """
 import json, os, pathlib, re, time, threading, urllib.request, urllib.error
 from collections import defaultdict
+try:
+    from rank_bm25 import BM25Okapi as _BM25Okapi
+    _BM25_AVAILABLE = True
+except ImportError:
+    _BM25Okapi = None
+    _BM25_AVAILABLE = False
 
 # ── LLM config (from env or config.yaml) ─────────────────────────────────────
 LLM_API_KEY  = os.environ.get("LLM_API_KEY",  "")
@@ -57,6 +63,15 @@ log_patterns: dict = {}
 doc_chunks:   list = []
 doc_by_id:    dict = {}
 gw_integrity: dict = {}
+
+# BM25 index (built at startup from symbol names + module names)
+_bm25:      object = None   # BM25Okapi instance
+_bm25_ids:  list   = []     # parallel list of node IDs
+_bm25_svcs: list   = []     # parallel list of service names
+_bm25_data: list   = []     # parallel list of node dicts (for result construction)
+
+# Service profiles from config (name → {role, traffic_weight, region})
+SERVICE_PROFILES: dict = {}
 
 # ── Retrieval tuning defaults (override via config.yaml) ────────────────────
 KNOWN_SERVICES: list = [
@@ -162,6 +177,20 @@ def load_config(config_path: pathlib.Path | str) -> dict:
         KNOWN_SERVICES = cfg["services"]
     if cfg.get("kw_allowlist"):
         _KW_ALLOWLIST = set(cfg["kw_allowlist"])
+
+    # Service profiles (new)
+    if cfg.get("service_profiles"):
+        SERVICE_PROFILES.update(cfg["service_profiles"])
+        # Rebuild KNOWN_SERVICES order by traffic_weight descending
+        KNOWN_SERVICES[:] = sorted(
+            SERVICE_PROFILES.keys(),
+            key=lambda s: SERVICE_PROFILES[s].get("traffic_weight", 0.5),
+            reverse=True,
+        )
+
+    # LLM API key from config (workspace config is not in git — safe to store there)
+    if cfg.get("llm_api_key") and not LLM_API_KEY:
+        globals()["LLM_API_KEY"] = cfg["llm_api_key"]
 
     # Persona overrides: call tools.apply_persona_config(cfg) after this returns
     # if you want config-driven persona customisation (tools.py owns the persona dicts).
@@ -333,6 +362,14 @@ def initialize(
             print(f"  {meta.get('total_modules',0):,} modules  {meta.get('total_pairs',0):,} pairs")
         else:
             print("  co-change index: not built yet")
+
+        # Inject synthetic co-change edges from call_graph (cold-start fix)
+        if call_graph and cochange_index is not None:
+            _inject_synthetic_cochange()
+
+        # Build BM25 index from all symbol names + module names
+        if _BM25_AVAILABLE:
+            _build_bm25_index()
 
         # Hot-reload watcher for co-change (used when builder is still running)
         def _cochange_watcher():
@@ -701,3 +738,182 @@ def get_blast_radius(module_names: list, max_hops: int = 2) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# BM25  (exact-match complement to dense vector search)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _tokenize_for_bm25(text: str) -> list:
+    return [t for t in re.split(r'[^a-zA-Z0-9]+', text.lower()) if len(t) >= 2]
+
+
+def _build_bm25_index():
+    """Build BM25 index from all graph nodes. Called once during initialize()."""
+    global _bm25, _bm25_ids, _bm25_svcs, _bm25_data
+    if G is None or not _BM25_AVAILABLE:
+        return
+    print("Building BM25 index...")
+    corpus, ids, svcs, data = [], [], [], []
+    for nid, d in G.nodes(data=True):
+        if d.get("kind") == "phantom":
+            continue
+        text = " ".join([
+            d.get("name", ""),
+            d.get("module", ""),
+            d.get("type", "")[:100],
+            d.get("cluster_name", ""),
+        ])
+        tokens = _tokenize_for_bm25(text)
+        if not tokens:
+            continue
+        corpus.append(tokens)
+        ids.append(nid)
+        svcs.append(d.get("service", "unknown"))
+        data.append({**d, "id": nid})
+    _bm25      = _BM25Okapi(corpus)
+    _bm25_ids  = ids
+    _bm25_svcs = svcs
+    _bm25_data = data
+    print(f"  BM25 index: {len(ids):,} symbols")
+
+
+def bm25_search(query: str, top_k: int = 60) -> dict:
+    """BM25 search. Returns {service: [node_dict, ...]}."""
+    if _bm25 is None:
+        return {}
+    tokens = _tokenize_for_bm25(query)
+    if not tokens:
+        return {}
+    scores = _bm25.get_scores(tokens)
+    ranked = sorted(range(len(scores)), key=lambda i: -scores[i])[:top_k]
+    results: dict = defaultdict(list)
+    for idx in ranked:
+        if scores[idx] <= 0:
+            break
+        node = {**_bm25_data[idx], "_bm25_score": float(scores[idx])}
+        if not _is_test_path(node.get("file", "")):
+            results[_bm25_svcs[idx]].append(node)
+    return dict(results)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# RRF FUSION
+# ════════════════════════════════════════════════════════════════════════════
+
+def rrf_merge(*result_dicts, k: int = 60) -> dict:
+    """
+    Reciprocal Rank Fusion: RRF(d) = Σ 1/(k + rank_i(d)).
+    Accepts any number of {service: [node, ...]} dicts.
+    Returns merged {service: [node, ...]} sorted by RRF score.
+    """
+    rrf_scores: dict = defaultdict(float)
+    node_by_id: dict = {}
+
+    for result_dict in result_dicts:
+        flat = [n for nodes in result_dict.values() for n in nodes]
+        if not flat:
+            continue
+        if "_distance" in flat[0]:
+            flat.sort(key=lambda x: x.get("_distance", 1.0))
+        elif "_bm25_score" in flat[0]:
+            flat.sort(key=lambda x: -x.get("_bm25_score", 0))
+        else:
+            flat.sort(key=lambda x: -x.get("_kw_score", 0))
+
+        for rank, node in enumerate(flat, start=1):
+            nid = node.get("id") or node.get("name", "")
+            if not nid:
+                continue
+            rrf_scores[nid] += 1.0 / (k + rank)
+            if nid not in node_by_id:
+                node_by_id[nid] = node
+
+    merged: dict = defaultdict(list)
+    for nid, score in sorted(rrf_scores.items(), key=lambda x: -x[1]):
+        node = {**node_by_id[nid], "_rrf_score": score}
+        merged[node.get("service", "unknown")].append(node)
+    return dict(merged)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SYNTHETIC CO-CHANGE  (cold-start fix for new modules)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _inject_synthetic_cochange():
+    """
+    Augment cochange_index with pairs derived from call_graph for modules
+    that have zero observed co-change history (cold-start fix).
+    Synthetic weight = 0.3 — well below real evidence (typically 3–50).
+    """
+    if not call_graph or MG is None:
+        return
+    SYNTHETIC_WEIGHT = 0.3
+    # Build short-name → module map from MG
+    shortname_to_mod: dict = defaultdict(list)
+    for mn in MG.nodes():
+        short = mn.split(".")[-1].split("::")[-1]
+        shortname_to_mod[short].append(mn)
+
+    injected = 0
+    for nid, info in call_graph.items():
+        parts = nid.split(".")
+        caller_mod = ".".join(parts[:-1]) if len(parts) > 1 else nid
+        if caller_mod not in MG.nodes:
+            continue
+        has_history = bool(cochange_index.get(caller_mod))
+        for callee_name in info.get("callees", []):
+            for callee_mod in shortname_to_mod.get(callee_name, []):
+                if callee_mod == caller_mod:
+                    continue
+                callee_has_history = bool(cochange_index.get(callee_mod))
+                if has_history and callee_has_history:
+                    continue   # both have real data — no need to synthesise
+                existing = {p["module"] for p in cochange_index.get(caller_mod, [])}
+                if callee_mod not in existing:
+                    cochange_index.setdefault(caller_mod, []).append(
+                        {"module": callee_mod, "weight": SYNTHETIC_WEIGHT, "synthetic": True}
+                    )
+                    injected += 1
+                existing2 = {p["module"] for p in cochange_index.get(callee_mod, [])}
+                if caller_mod not in existing2:
+                    cochange_index.setdefault(callee_mod, []).append(
+                        {"module": caller_mod, "weight": SYNTHETIC_WEIGHT, "synthetic": True}
+                    )
+                    injected += 1
+    if injected:
+        print(f"  Synthetic co-change: +{injected} pairs injected from call graph")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# UNIFIED SEARCH  (vector + BM25 via RRF, service-weight-aware)
+# ════════════════════════════════════════════════════════════════════════════
+
+def unified_search(queries: list, k_total: int = 250) -> dict:
+    """
+    Primary search entry point. Fuses dense vector + BM25 via RRF.
+    Service budget allocated proportional to traffic_weight from SERVICE_PROFILES.
+    Falls back gracefully: vector → BM25 → keyword.
+    """
+    svc_weights = {
+        svc: prof.get("traffic_weight", 0.5)
+        for svc, prof in SERVICE_PROFILES.items()
+    } if SERVICE_PROFILES else {}
+
+    vec_results  = stratified_vector_search(queries, k_total=k_total,
+                                             service_weights=svc_weights or None)
+    bm25_results = bm25_search(queries[0] if queries else "", top_k=60)
+
+    if vec_results or bm25_results:
+        sources = [r for r in (vec_results, bm25_results) if r]
+        merged = rrf_merge(*sources)
+    else:
+        merged = cross_service_keyword_search(queries[0] if queries else "")
+
+    # Apply per-service cap based on traffic_weight
+    if SERVICE_PROFILES:
+        capped: dict = {}
+        for svc, nodes in merged.items():
+            weight = SERVICE_PROFILES.get(svc, {}).get("traffic_weight", 0.5)
+            cap = max(3, int(25 * weight))
+            capped[svc] = nodes[:cap]
+        return capped
+
+    return merged

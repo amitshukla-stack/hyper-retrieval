@@ -20,7 +20,9 @@ Usage:
 """
 import argparse, json, os, pathlib, sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
+_REPO = pathlib.Path(__file__).parent.parent.parent   # apps/cli → apps → repo root
+sys.path.insert(0, str(_REPO / "serve"))              # for retrieval_engine.py
+sys.path.insert(0, str(_REPO))                        # for tools.py (if needed)
 import retrieval_engine as RE
 
 # ── Security heuristics ───────────────────────────────────────────────────────

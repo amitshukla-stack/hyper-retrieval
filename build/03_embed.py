@@ -1,5 +1,5 @@
 """
-Stage 3 — GPU-batch embed all nodes with Qwen3-Embedding-8B → LanceDB.
+Stage 3 — GPU-batch embed all nodes with Qwen3-Embedding-8B -> LanceDB.
 
 Model: Qwen/Qwen3-Embedding-8B
   - 8B params, 4096d, 32K context, instruction-aware
@@ -8,22 +8,23 @@ Model: Qwen/Qwen3-Embedding-8B
 
 LanceDB note: LanceDB requires a native Linux ext4 filesystem (mmap).
   Writing to /mnt/d/... (NTFS via WSL2) fails at finalise time.
-  Strategy: write to /tmp/vectors.lance, then rsync to demo_artifact/.
+  Strategy: write to /tmp/vectors.lance, then rsync to ARTIFACT_DIR.
 
 Checkpoint: embeddings saved to output/embeddings.npy + output/embed_ids.json
   so GPU work is not lost if the LanceDB step fails.
+  Checkpoint is saved AFTER encode() completes to avoid partial/mismatched saves.
 
-Input:  pipeline/output/graph_clustered.json
-Output: pipeline/demo_artifact/vectors.lance/
-        pipeline/output/graph_clustered.json  (embed_text added to each node)
+Input:  output/graph_clustered.json
+Output: ARTIFACT_DIR/vectors.lance/
+        output/graph_clustered.json  (embed_text added to each node)
 """
 import json, pathlib, os, shutil
 
-OUT_DIR      = pathlib.Path(__file__).parent / "output"
-ARTIFACT_DIR = pathlib.Path(__file__).parent / "demo_artifact"
+OUT_DIR      = pathlib.Path(os.environ.get("OUTPUT_DIR", pathlib.Path(__file__).parent / "output"))
+ARTIFACT_DIR = pathlib.Path(os.environ.get("ARTIFACT_DIR", pathlib.Path(__file__).parent / "demo_artifact"))
 ARTIFACT_DIR.mkdir(exist_ok=True)
 
-MODEL_PATH = pathlib.Path(__file__).parent / "models" / "qwen3-embed-8b"
+MODEL_PATH = pathlib.Path(os.environ.get("EMBED_MODEL", str(pathlib.Path(__file__).parent / "models" / "qwen3-embed-8b")))
 BATCH_SIZE = int(os.environ.get("EMBED_BATCH_SIZE", "32"))
 
 # Native Linux temp path for LanceDB (avoids NTFS mmap incompatibility)
@@ -59,6 +60,10 @@ def node_to_text(n: dict) -> str:
     if n.get("commit_history"):
         msgs = [c["msg"] for c in n["commit_history"][:3]]
         parts.append(f"recent changes: {'; '.join(msgs)}")
+    if n.get("service_role"):
+        parts.append(f"service_role: {n['service_role']}")
+    if n.get("traffic_weight") is not None:
+        parts.append(f"traffic_weight: {n['traffic_weight']:.1f}")
     return "\n".join(parts)
 
 
@@ -90,7 +95,7 @@ def run_embedding(nodes, device):
     )
     print(f"  Shape: {embeddings.shape}")
 
-    # ── Checkpoint to disk immediately ───────────────────────────────────────
+    # ── Checkpoint to disk AFTER encode() completes (avoids partial save on crash) ──
     print(f"\nSaving embedding checkpoint...")
     np.save(str(EMBED_NPY), embeddings)
     EMBED_IDS.write_text(json.dumps([n["id"] for n in nodes]))
@@ -132,11 +137,11 @@ def write_lancedb(nodes, raw_texts, embeddings):
     table = db.create_table("chunks", data=records)
     print(f"  Written to {LANCE_TMP}")
 
-    # Copy to Windows destination
+    # Copy to ARTIFACT_DIR destination
     if LANCE_DEST.exists():
         shutil.rmtree(LANCE_DEST)
     shutil.copytree(LANCE_TMP, LANCE_DEST)
-    print(f"  Copied → {LANCE_DEST}")
+    print(f"  Copied -> {LANCE_DEST}")
 
     size_mb = sum(f.stat().st_size for f in LANCE_DEST.rglob("*") if f.is_file()) // (1024*1024)
     print(f"  Final size: {size_mb}MB")
@@ -161,6 +166,7 @@ def main():
 
     # ── Load graph ───────────────────────────────────────────────────────────
     data  = json.loads((OUT_DIR / "graph_clustered.json").read_text())
+    # Only embed non-phantom nodes; phantoms get embed_text="" on write-back
     nodes = [n for n in data["nodes"] if n.get("kind") != "phantom"]
     print(f"  Nodes to embed: {len(nodes):,}")
 
@@ -182,10 +188,11 @@ def main():
     # ── Write LanceDB ─────────────────────────────────────────────────────────
     write_lancedb(nodes, raw_texts, embeddings)
 
-    print(f"\n✓ Wrote {len(nodes):,} vectors → {LANCE_DEST}")
+    print(f"\nWrote {len(nodes):,} vectors -> {LANCE_DEST}")
     print(f"  Vector dim : {embeddings.shape[1]}")
 
     # ── Persist embed_text back to graph ─────────────────────────────────────
+    # Phantoms get empty string via .get() default
     text_map = {n["id"]: t for n, t in zip(nodes, raw_texts)}
     for n in data["nodes"]:
         n["embed_text"] = text_map.get(n["id"], "")

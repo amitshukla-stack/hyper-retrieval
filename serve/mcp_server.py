@@ -35,8 +35,10 @@ Tool usage decision tree
 """
 import argparse, os, pathlib, socket, sys
 
-# ── Add pipeline dir to path so retrieval_engine imports cleanly ──────────────
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
+# ── Add serve/ (retrieval_engine) and repo root (tools.py) to path ───────────
+_SERVE = pathlib.Path(__file__).parent
+sys.path.insert(0, str(_SERVE))              # for retrieval_engine.py
+sys.path.insert(0, str(_SERVE.parent))       # for tools.py
 
 import retrieval_engine as RE
 import tools as T

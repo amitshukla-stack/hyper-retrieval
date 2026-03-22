@@ -6,7 +6,9 @@ This is where you add, remove, or modify tools for your deployment.
 - Override persona: set _DEFAULT_SYSTEM_PROMPT and _DEFAULT_FRAMEWORK below.
 - The retrieval primitives (vector search, graph traversal) live in retrieval_engine.py — no need to touch them.
 """
-import json, os, re
+import sys, json, os, re
+import pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).parent / "serve"))
 import retrieval_engine as RE
 
 
@@ -804,7 +806,7 @@ def tool_get_context(query: str) -> str:
     cluster_by_svc = RE.get_cluster_context_for_services(
         list(set(list(vec_by_svc) + list(kw_by_svc)))
     )
-    doc_hits = RE.doc_vector_search(query, k=3) if RE.doc_lance_tbl is not None else []
+    doc_hits = RE.doc_vector_search(RE._encode_query(query), top_k=3) if RE.doc_lance_tbl is not None else []
     return _build_base_context(vec_by_svc, kw_by_svc, cluster_by_svc, "default", doc_hits)
 
 

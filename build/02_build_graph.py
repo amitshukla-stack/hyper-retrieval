@@ -1,15 +1,37 @@
 """
-Stage 2 — Build NetworkX graph, run Louvain at module level, propagate to nodes.
-Input:  pipeline/output/raw_graph.json
-Output: pipeline/output/graph_clustered.json
+Stage 2 — Build NetworkX graph, run Leiden at module level, propagate to nodes.
+Input:  output/raw_graph.json
+Output: output/graph_clustered.json
 """
-import json, pathlib, collections
+import json, pathlib, collections, os
 
-OUT_DIR = pathlib.Path(__file__).parent / "output"
+import networkx as nx
+import leidenalg, igraph as ig
+
+OUT_DIR = pathlib.Path(os.environ.get("OUTPUT_DIR", pathlib.Path(__file__).parent / "output"))
+
+
+def load_service_profiles():
+    """Load service_profiles from config.yaml if available."""
+    config_path = os.environ.get("CONFIG_PATH", "")
+    if not config_path:
+        workspace_dir = os.environ.get("WORKSPACE_DIR", "")
+        if workspace_dir:
+            config_path = str(pathlib.Path(workspace_dir) / "config.yaml")
+    if config_path and pathlib.Path(config_path).exists():
+        try:
+            import yaml
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f)
+            return cfg.get("service_profiles", {})
+        except Exception as e:
+            print(f"  Warning: could not load service_profiles from config: {e}")
+    return {}
+
 
 def main():
-    import networkx as nx
-    import community as community_louvain
+    service_profiles = load_service_profiles()
+    print(f"  Service profiles loaded: {list(service_profiles.keys()) or '(none)'}")
 
     raw = json.loads((OUT_DIR / "raw_graph.json").read_text())
     nodes = raw["nodes"]
@@ -49,13 +71,7 @@ def main():
                     MG.add_node(dst, external=True)
                 MG.add_edge(src, dst, kind="import", weight=1)
 
-        elif kind == "co_change":
-            # src/dst are file paths — map back to modules
-            # Find which modules live in those files
-            weight = e.get("weight", 1)
-            if weight >= 2:   # only meaningful co-changes
-                co_change_by_file[src]
-                co_change_by_file[dst]
+        # co_change edges are handled in the second pass below (dead lines removed)
 
     # Map files → modules for co-change edges
     file_to_modules = collections.defaultdict(set)
@@ -80,17 +96,16 @@ def main():
     print(f"Module graph: {MG.number_of_nodes()} nodes, {MG.number_of_edges()} edges")
     print(f"  Import edges: {import_edges_added}, co-change edges: {co_change_added}")
 
-    # Keep only internal modules for Louvain (remove phantom external nodes)
+    # Keep only internal modules for Leiden (remove phantom external nodes)
     internal_modules = [m for m in all_modules if MG.has_node(m)]
     sub = MG.subgraph(internal_modules)
 
-    # Handle disconnected graph — Louvain needs connected components
-    # Run on the largest connected component, assign isolated nodes to their own cluster
+    # Handle disconnected graph — run on each connected component
     components = list(nx.connected_components(sub))
     print(f"  Connected components: {len(components)}")
     print(f"  Largest component: {max(len(c) for c in components)} modules")
 
-    # Run Louvain on each component that has >1 node
+    # Run Leiden on each component that has >1 node
     partition = {}
     cluster_offset = 0
     for comp in sorted(components, key=len, reverse=True):
@@ -100,23 +115,36 @@ def main():
             cluster_offset += 1
         else:
             comp_sub = sub.subgraph(comp)
-            comp_partition = community_louvain.best_partition(
-                comp_sub, random_state=42, resolution=1.2
+
+            # Convert networkx subgraph to igraph
+            nodes_list = list(comp_sub.nodes())
+            node_idx = {n: i for i, n in enumerate(nodes_list)}
+            edges_list = [(node_idx[u], node_idx[v]) for u, v in comp_sub.edges()]
+            weights = [comp_sub[u][v].get('weight', 1) for u, v in comp_sub.edges()]
+            ig_graph = ig.Graph(n=len(nodes_list), edges=edges_list)
+            ig_graph.es['weight'] = weights
+            leiden_partition = leidenalg.find_partition(
+                ig_graph,
+                leidenalg.RBConfigurationVertexPartition,
+                weights='weight',
+                resolution_parameter=1.2,
+                seed=42,
             )
+            comp_partition = {nodes_list[i]: leiden_partition.membership[i]
+                              for i in range(len(nodes_list))}
+
             # Offset cluster IDs to avoid collisions
-            max_local = max(comp_partition.values()) + 1
+            max_local = (max(comp_partition.values()) + 1) if comp_partition else 1
             for mod, cid in comp_partition.items():
                 partition[mod] = cid + cluster_offset
             cluster_offset += max_local
 
     cluster_counts = collections.Counter(partition.values())
     real_clusters   = {cid: cnt for cid, cnt in cluster_counts.items() if cnt >= 2}
-    print(f"\nLouvain: {len(cluster_counts)} total clusters")
+    print(f"\nLeiden: {len(cluster_counts)} total clusters")
     print(f"  Clusters with 2+ modules: {len(real_clusters)}")
     print(f"  Top 10 by size:")
     for cid, cnt in sorted(real_clusters.items(), key=lambda x: -x[1])[:10]:
-        # Show dominant service for this cluster
-        mods_in = [m for m, c in partition.items() if c == cid]
         print(f"    cluster_{cid}: {cnt} modules")
 
     # ── Propagate cluster IDs down to individual nodes ────────────────────────
@@ -159,6 +187,18 @@ def main():
         data["ghost_deps"]       = [g for g, _ in ghost_counter.most_common(5)]
         data["dominant_service"] = svc_counter.most_common(1)[0][0] if svc_counter else "unknown"
 
+        # Attach traffic_weight from service_profiles for the dominant service
+        dominant_svc = data["dominant_service"]
+        if service_profiles and dominant_svc in service_profiles:
+            profile = service_profiles[dominant_svc]
+            data["traffic_weight"] = profile.get("traffic_weight")
+            data["dominant_service_role"] = profile.get("role")
+            data["dominant_service_region"] = profile.get("region")
+        else:
+            data["traffic_weight"] = None
+            data["dominant_service_role"] = None
+            data["dominant_service_region"] = None
+
     nx_data = nx.node_link_data(G)
 
     result = {
@@ -178,7 +218,7 @@ def main():
 
     out_path = OUT_DIR / "graph_clustered.json"
     out_path.write_text(json.dumps(result, indent=2))
-    print(f"\n✓ Wrote clustered graph → {out_path}")
+    print(f"\nWrote clustered graph -> {out_path}")
     print(f"  {len(nodes)} symbol nodes | {len(edges)} edges | "
           f"{len(real_clusters)} meaningful clusters")
 

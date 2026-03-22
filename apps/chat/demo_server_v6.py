@@ -9,11 +9,12 @@ Clean ReAct architecture:
 
 No pre-retrieval, no fast_route, no context pre-loading.
 """
-import asyncio, json, os, pathlib, sys, time
+import asyncio, json, os, pathlib, sys, time, threading
 import chainlit as cl
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
+_REPO = pathlib.Path(__file__).parent.parent.parent   # apps/chat → apps → repo root
+sys.path.insert(0, str(_REPO))                        # for tools.py
+sys.path.insert(0, str(_REPO / "serve"))              # for retrieval_engine.py
 import retrieval_engine as RE
 import tools as T
 
@@ -27,12 +28,14 @@ LLM_API_KEY    = os.environ.get("LLM_API_KEY",  "")
 LLM_BASE_URL   = os.environ.get("LLM_BASE_URL", "")
 LLM_MODEL      = os.environ.get("LLM_MODEL",    "reasoning-large-model")
 MAX_HISTORY    = 6
-MAX_TOOL_CALLS = 12
+MAX_TOOL_CALLS = 30   # hard ceiling — LLM self-terminates; this is runaway protection only
+MAX_SAME_CALL  = 2    # break if identical (tool, args) repeats this many times
 RETRIEVAL_LOG  = pathlib.Path("/tmp/retrieval_log.jsonl")
 
 llm_client       = None
 async_llm_client = None
 _load_all_done   = False
+_load_lock       = threading.Lock()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -115,6 +118,19 @@ Rules:
 - Batch independent tool calls in a single response turn
 - If a search returns unexpected results, refine the query rather than repeating it
 - Fully-qualified IDs use dot notation: Module.SubModule.functionName (no slashes, no extensions)
+- Use as many tool calls as needed — do not stop until you have read actual source code
+- Never synthesize an answer from module names or search summaries alone
+
+## Between tool rounds
+As you investigate, emit a brief sentence of reasoning before each new batch of tool calls. \
+Tell the user what you found and what you are looking for next. \
+Example: "Found the module structure. Now reading the core payment function and tracing its callees."
+
+## Ending every response
+After your final answer, always close with a `> **Explore further:**` block containing \
+2–3 specific follow-up questions grounded in what you just read — questions the user could \
+ask to go one level deeper. Make them concrete (reference actual function names, modules, or \
+flows you discovered).
 """
 
 
@@ -126,11 +142,14 @@ def load_all():
     global llm_client, async_llm_client, _load_all_done
     if _load_all_done:
         return
-    from openai import OpenAI, AsyncOpenAI
-    RE.initialize(ARTIFACT_DIR)
-    llm_client       = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
-    async_llm_client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
-    _load_all_done   = True
+    with _load_lock:
+        if _load_all_done:   # re-check inside lock — second thread may have finished
+            return
+        from openai import OpenAI, AsyncOpenAI
+        RE.initialize(ARTIFACT_DIR)
+        llm_client       = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+        async_llm_client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+        _load_all_done   = True
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -189,23 +208,215 @@ async def set_chat_profiles():
 
 @cl.on_chat_start
 async def on_start():
-    await asyncio.to_thread(load_all)
     cl.user_session.set("history", [])
-    await cl.Message(
-        content="**HyperRetrieval** ready. Ask anything about your codebase, or type `/status` for system stats."
-    ).send()
+    # Kick off loading in the background but send NO message — welcome screen
+    # (centered input + starter cards) must stay visible until the user acts.
+    # Sending any message here immediately destroys the welcome layout.
+    if not _load_all_done:
+        asyncio.create_task(asyncio.to_thread(load_all))
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# AGENT LOOP — extracted so action callbacks can resume it
+# ════════════════════════════════════════════════════════════════════════════
+
+async def _stream_final_answer(messages: list, query: str, tool_log: list) -> None:
+    """Stream the LLM's final answer, update session history, log to disk."""
+    history = cl.user_session.get("history", [])
+
+    stream = await async_llm_client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=messages,
+        temperature=0.2,
+        max_tokens=65536,
+        stream=True,
+    )
+    response_msg = cl.Message(content="")
+    await response_msg.send()
+    full_response = ""
+    async for chunk in stream:
+        token = chunk.choices[0].delta.content
+        if token:
+            full_response += token
+            await response_msg.stream_token(token)
+    await response_msg.update()
+
+    history.append((query, full_response[:3000]))
+    cl.user_session.set("history", history[-MAX_HISTORY:])
+    try:
+        with open(RETRIEVAL_LOG, "a") as lf:
+            lf.write(json.dumps({"ts": time.time(), "query": query,
+                                  "tool_calls": tool_log}) + "\n")
+    except Exception:
+        pass
+
+
+async def _react_loop(messages: list, query: str, tool_log: list) -> bool:
+    """
+    Run one batch of the ReAct loop (up to MAX_TOOL_CALLS tool calls).
+    - Returns True  → LLM finished naturally; final answer streamed.
+    - Returns False → ceiling hit; state saved to session, action buttons shown.
+    Caller should return immediately on False.
+    """
+    seen_calls: dict = {}
+    tool_calls_count = 0
+
+    while True:
+        resp = await asyncio.to_thread(
+            llm_client.chat.completions.create,
+            model=LLM_MODEL,
+            messages=messages,
+            tools=T.AGENT_TOOLS,
+            tool_choice="auto",
+            temperature=0.15,
+            max_tokens=16000,
+        )
+        assistant_msg = resp.choices[0].message
+
+        # LLM finished — no more tool calls
+        if not assistant_msg.tool_calls:
+            break
+
+        # Show between-round reasoning if the LLM emitted any
+        if assistant_msg.content and assistant_msg.content.strip():
+            async with cl.Step(name="💭 Reasoning", type="run",
+                               show_input=False) as thought:
+                thought.output = assistant_msg.content.strip()
+
+        messages.append({
+            "role": "assistant",
+            "content": assistant_msg.content,
+            "tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                for tc in assistant_msg.tool_calls
+            ],
+        })
+
+        tool_results  = []
+        loop_detected = False
+        for tc in assistant_msg.tool_calls:
+            fn_name  = tc.function.name
+            args_raw = tc.function.arguments
+            try:
+                args = json.loads(args_raw)
+            except Exception:
+                args = {}
+
+            call_key = (fn_name, args_raw)
+            seen_calls[call_key] = seen_calls.get(call_key, 0) + 1
+            if seen_calls[call_key] >= MAX_SAME_CALL:
+                loop_detected = True
+
+            tool_calls_count += 1
+            async with cl.Step(name=_step_name(fn_name, args), type="tool",
+                               show_input=False) as step:
+                dispatcher = T.TOOL_DISPATCH.get(fn_name)
+                result = await asyncio.to_thread(dispatcher, args) if dispatcher \
+                         else f"Unknown tool: {fn_name}"
+                lines = [l.strip() for l in result.splitlines()
+                         if l.strip() and not l.startswith(("#", "=", "-"))]
+                step.output = lines[0][:160] if lines else result[:160]
+
+            tool_log.append({"tool": fn_name, "args": args})
+            tool_results.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+        messages.extend(tool_results)
+
+        # ── Ceiling: save state, show action buttons, yield control to UI ──
+        if tool_calls_count >= MAX_TOOL_CALLS:
+            cl.user_session.set("_paused", {
+                "messages": messages,
+                "query":    query,
+                "tool_log": tool_log,
+            })
+            await cl.Message(
+                content=(
+                    f"⚠️ **{tool_calls_count} tool calls used.** "
+                    "The agent can keep investigating or synthesize what it has found so far."
+                ),
+                actions=[
+                    cl.Action(name="cl_extend",    label="🔍 Keep investigating",
+                              payload={"action": "extend"}),
+                    cl.Action(name="cl_synthesize", label="✓ Synthesize now",
+                              payload={"action": "synthesize"}),
+                ],
+            ).send()
+            return False  # paused — caller must return
+
+        # ── Loop detected: inject stop instruction and break ──
+        if loop_detected:
+            messages.append({
+                "role": "user",
+                "content": "You have called the same tool with the same arguments more than once. "
+                           "You have enough context — synthesize your answer now.",
+            })
+            break
+
+    await _stream_final_answer(messages, query, tool_log)
+    return True
+
+
+@cl.action_callback("cl_extend")
+async def on_extend(action: cl.Action):
+    """User chose to keep investigating — resume the loop with saved state."""
+    state = cl.user_session.get("_paused")
+    if not state:
+        await cl.Message(content="No paused investigation found.").send()
+        return
+    cl.user_session.set("_paused", None)
+    try:
+        await _react_loop(state["messages"], state["query"], state["tool_log"])
+    except Exception as e:
+        import traceback
+        await cl.Message(
+            content=f"**Error:** {e}\n```\n{traceback.format_exc()[:1000]}\n```"
+        ).send()
+
+
+@cl.action_callback("cl_synthesize")
+async def on_synthesize(action: cl.Action):
+    """User chose to synthesize — inject stop instruction and stream final answer."""
+    state = cl.user_session.get("_paused")
+    if not state:
+        await cl.Message(content="No paused investigation found.").send()
+        return
+    cl.user_session.set("_paused", None)
+    messages = state["messages"]
+    messages.append({
+        "role": "user",
+        "content": "You have used many tool calls. Synthesize your findings into a complete answer now.",
+    })
+    try:
+        await _stream_final_answer(messages, state["query"], state["tool_log"])
+    except Exception as e:
+        import traceback
+        await cl.Message(
+            content=f"**Error:** {e}\n```\n{traceback.format_exc()[:1000]}\n```"
+        ).send()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# CHAINLIT MESSAGE HANDLER
+# ════════════════════════════════════════════════════════════════════════════
 
 @cl.on_message
 async def on_message(message: cl.Message):
     query = message.content.strip()
+
+    # If indexes are still loading (first-ever connection), wait here.
+    if not _load_all_done:
+        loading_msg = cl.Message(content="⏳ Loading indexes, please wait…")
+        await loading_msg.send()
+        await asyncio.to_thread(load_all)
+        await loading_msg.update(content="✓ Ready — processing your query…")
 
     # /status command
     if query.lower().startswith("/status"):
         lines = [
             "**HyperRetrieval Status**",
             f"- Graph: {RE.G.number_of_nodes():,} nodes, {RE.G.number_of_edges():,} edges",
-            f"- Vectors: {len(RE.lance_tbl):,} @ 4096d",
+            f"- Vectors: {RE.lance_tbl.count_rows():,} @ 4096d",
             f"- Module graph: {RE.MG.number_of_nodes():,} modules, {RE.MG.number_of_edges():,} edges",
             f"- Co-change: {len(RE.cochange_index):,} modules indexed",
             f"- Body store: {len(RE.body_store):,} bodies",
@@ -218,114 +429,14 @@ async def on_message(message: cl.Message):
         return
 
     history = cl.user_session.get("history", [])
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for past_q, past_a in history[-MAX_HISTORY:]:
+        messages.append({"role": "user",      "content": past_q})
+        messages.append({"role": "assistant", "content": past_a})
+    messages.append({"role": "user", "content": query})
 
     try:
-        # ── Build initial messages: system first, then history, then user query ─
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for past_q, past_a in history[-MAX_HISTORY:]:
-            messages.append({"role": "user",      "content": past_q})
-            messages.append({"role": "assistant", "content": past_a})
-        messages.append({"role": "user", "content": query})
-
-        # ── ReAct loop: LLM reasons and calls tools until it has enough info ──
-        tool_calls_count = 0
-        tool_log = []
-
-        while tool_calls_count < MAX_TOOL_CALLS:
-            resp = await asyncio.to_thread(
-                llm_client.chat.completions.create,
-                model=LLM_MODEL,
-                messages=messages,
-                tools=T.AGENT_TOOLS,
-                tool_choice="auto",
-                temperature=0.15,
-                max_tokens=4000,
-            )
-
-            assistant_msg = resp.choices[0].message
-
-            # No tool calls → LLM has finished reasoning, stream final answer
-            if not assistant_msg.tool_calls:
-                break
-
-            # Append assistant's reasoning + tool decisions to message history
-            messages.append({
-                "role": "assistant",
-                "content": assistant_msg.content,
-                "tool_calls": [
-                    {"id": tc.id, "type": "function",
-                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                    for tc in assistant_msg.tool_calls
-                ],
-            })
-
-            # Execute each tool call, render as a Chainlit step
-            tool_results = []
-            for tc in assistant_msg.tool_calls:
-                tool_calls_count += 1
-                fn_name = tc.function.name
-                try:
-                    args = json.loads(tc.function.arguments)
-                except Exception:
-                    args = {}
-
-                async with cl.Step(name=_step_name(fn_name, args), type="tool",
-                                   show_input=False) as step:
-                    dispatcher = T.TOOL_DISPATCH.get(fn_name)
-                    result = await asyncio.to_thread(dispatcher, args) if dispatcher \
-                             else f"Unknown tool: {fn_name}"
-                    lines = [l.strip() for l in result.splitlines()
-                             if l.strip() and not l.startswith(("#", "=", "-"))]
-                    step.output = lines[0][:160] if lines else result[:160]
-
-                tool_log.append({"tool": fn_name, "args": args})
-                tool_results.append({
-                    "role": "tool", "tool_call_id": tc.id, "content": result,
-                })
-
-            messages.extend(tool_results)
-
-            if tool_calls_count >= MAX_TOOL_CALLS:
-                messages.append({
-                    "role": "user",
-                    "content": "You have reached the investigation limit. Synthesize your findings into a complete answer now.",
-                })
-                break
-
-        # ── Stream final answer ────────────────────────────────────────────────
-        stream = await async_llm_client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=messages,
-            temperature=0.2,
-            max_tokens=32000,
-            stream=True,
-        )
-
-        response_msg = cl.Message(content="")
-        await response_msg.send()
-        full_response = ""
-
-        async for chunk in stream:
-            token = chunk.choices[0].delta.content
-            if token:
-                full_response += token
-                await response_msg.stream_token(token)
-
-        await response_msg.update()
-
-        # ── Update history ─────────────────────────────────────────────────────
-        history.append((query, full_response[:3000]))
-        cl.user_session.set("history", history[-MAX_HISTORY:])
-
-        # ── Log for offline analysis ───────────────────────────────────────────
-        try:
-            with open(RETRIEVAL_LOG, "a") as lf:
-                lf.write(json.dumps({
-                    "ts": time.time(), "query": query, "tool_calls": tool_log,
-                }) + "\n")
-        except Exception:
-            pass
-
+        await _react_loop(messages, query, [])
     except Exception as e:
         import traceback
         await cl.Message(

@@ -8,16 +8,18 @@ Safeguards:
   - Saves after every cluster (crash-safe)
   - Stratified node sampling for huge clusters (spread across modules)
   - Robust JSON extraction (handles reasoning models that think before answering)
+  - Per-cluster seed for stratified sampling (avoids bias from global shuffle)
+  - Cross-cluster external callers included in prompt (from call_graph.json)
 
-Input:  pipeline/output/graph_clustered.json
-Output: pipeline/output/graph_with_summaries.json
-        pipeline/demo_artifact/graph_with_summaries.json
+Input:  output/graph_clustered.json
+Output: output/graph_with_summaries.json
+        demo_artifact/graph_with_summaries.json
 """
 import json, pathlib, os, sys, time, random, re
 from collections import defaultdict
 
-OUT_DIR      = pathlib.Path(__file__).parent / "output"
-ARTIFACT_DIR = pathlib.Path(__file__).parent / "demo_artifact"
+OUT_DIR      = pathlib.Path(os.environ.get("OUTPUT_DIR",    pathlib.Path(__file__).parent / "output"))
+ARTIFACT_DIR = pathlib.Path(os.environ.get("ARTIFACT_DIR", pathlib.Path(__file__).parent / "demo_artifact"))
 ARTIFACT_DIR.mkdir(exist_ok=True)
 
 API_KEY  = os.environ.get("LLM_API_KEY",  "")
@@ -36,6 +38,38 @@ SYSTEM_PROMPT = (
     "that can be passed directly to json.loads()."
 )
 
+# ── Load optional call graph ──────────────────────────────────────────────────
+
+CALL_GRAPH_PATH = OUT_DIR / "call_graph.json"
+call_graph = {}
+if CALL_GRAPH_PATH.exists():
+    try:
+        call_graph = json.loads(CALL_GRAPH_PATH.read_text())
+        print(f"[call_graph] Loaded {len(call_graph)} entries from {CALL_GRAPH_PATH}")
+    except Exception as e:
+        print(f"[call_graph] Failed to load: {e} — skipping cross-cluster callers")
+
+
+# ── Resume filter ─────────────────────────────────────────────────────────────
+
+def _is_bad_summary(s: dict) -> bool:
+    """Return True if summary is an error/parse-fail placeholder, not a real LLM result."""
+    name    = s.get("name", "")
+    purpose = s.get("purpose", "")
+    if not name:
+        return True
+    # Error placeholders always have a numeric cluster ID as name: "cluster_42"
+    if re.match(r'^cluster_\d+$', name):
+        return True
+    # Explicit error/parse-fail markers set by call_with_backoff
+    if any(marker in purpose for marker in [
+        "Error:", "Parse failed", "No JSON", "Empty response", "Max retries"
+    ]):
+        return True
+    return False
+
+
+# ── JSON extraction ───────────────────────────────────────────────────────────
 
 def extract_json(text):
     """
@@ -65,14 +99,21 @@ def extract_json(text):
     return text[start:end+1], text
 
 
-def stratified_sample(nodes, n):
+# ── Stratified sampling ───────────────────────────────────────────────────────
+
+def stratified_sample(nodes, n, cluster_id=0):
+    """
+    Sample up to n nodes spread evenly across modules.
+    Uses a per-cluster seed so different clusters get different orderings.
+    """
     if len(nodes) <= n:
         return nodes
     by_module = defaultdict(list)
     for node in nodes:
         by_module[node.get("module", "unknown")].append(node)
     modules = list(by_module.keys())
-    random.seed(42)
+    # Per-cluster seed prevents every cluster from seeing the same module ordering
+    random.seed(42 + hash(str(cluster_id)) % 10000)
     random.shuffle(modules)
     sampled, per_module = [], max(1, n // len(modules))
     for mod in modules:
@@ -82,13 +123,16 @@ def stratified_sample(nodes, n):
     return sampled[:n]
 
 
+# ── Prompt building ───────────────────────────────────────────────────────────
+
 def build_cluster_prompt(cluster_id, nodes, cluster_meta):
     services   = list(cluster_meta.get("services", {}).keys())
     langs      = list(cluster_meta.get("langs", {}).keys())
     ghost_deps = cluster_meta.get("ghost_deps", [])
     n_modules  = len(set(n.get("module") for n in nodes))
 
-    sample = stratified_sample(nodes, MAX_NODES_PER_CLUSTER)
+    cid_int = int(cluster_id) if str(cluster_id).isdigit() else 0
+    sample = stratified_sample(nodes, MAX_NODES_PER_CLUSTER, cluster_id=cid_int)
     lines  = []
     for n in sample:
         lang    = n.get("lang", "?")
@@ -109,6 +153,21 @@ def build_cluster_prompt(cluster_id, nodes, cluster_meta):
     )
     if ghost_deps:
         prompt += f"Known external deps: {', '.join(ghost_deps)}\n"
+
+    # Cross-cluster external callers (from call_graph.json)
+    if call_graph:
+        cluster_node_ids = set(n["id"] for n in nodes)
+        external_callers = set()
+        for nid, info in call_graph.items():
+            if nid not in cluster_node_ids:
+                for callee in info.get("callees", []):
+                    if callee in cluster_node_ids or any(callee in nid2 for nid2 in cluster_node_ids):
+                        mod = ".".join(nid.split(".")[:3])
+                        external_callers.add(mod)
+                        break
+        if external_callers:
+            prompt += f"External modules calling into this cluster: {', '.join(list(external_callers)[:5])}\n"
+
     prompt += (
         f"\nRepresentative sample ({len(sample)} of {len(nodes)} symbols, stratified across modules):\n"
         + "\n".join(lines)
@@ -125,6 +184,8 @@ def build_cluster_prompt(cluster_id, nodes, cluster_meta):
     )
     return prompt
 
+
+# ── LLM call with backoff ─────────────────────────────────────────────────────
 
 def call_with_backoff(client, prompt, cluster_id):
     for attempt in range(MAX_RETRIES):
@@ -168,11 +229,15 @@ def call_with_backoff(client, prompt, cluster_id):
     return {"name": f"cluster_{cluster_id}", "purpose": "Max retries exceeded"}
 
 
+# ── Progress saving ───────────────────────────────────────────────────────────
+
 def save_progress(data, summaries, out_path):
     data["cluster_summaries"] = summaries
     out_path.write_text(json.dumps(data, indent=2))
     (ARTIFACT_DIR / "graph_with_summaries.json").write_text(json.dumps(data, indent=2))
 
+
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     from openai import OpenAI
@@ -194,16 +259,15 @@ def main():
     node_index = {n["id"]: n for n in nodes}
     out_path   = OUT_DIR / "graph_with_summaries.json"
 
-    # Resume — but discard any "bad" summaries from prior failed run
+    # Resume — discard only genuine error/placeholder summaries
     cluster_summaries = {}
     if out_path.exists():
         try:
-            existing = json.loads(out_path.read_text())
+            existing  = json.loads(out_path.read_text())
             all_saved = existing.get("cluster_summaries", {})
-            # Keep only summaries that have a real name (not error/parse-fail placeholders)
             cluster_summaries = {
                 cid: s for cid, s in all_saved.items()
-                if s.get("name") and not s["name"].startswith("cluster_")
+                if not _is_bad_summary(s)
             }
             skipped = len(all_saved) - len(cluster_summaries)
             if cluster_summaries:

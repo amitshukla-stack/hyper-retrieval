@@ -7,26 +7,91 @@ Output:  $OUTPUT_DIR/raw_graph.json
          $OUTPUT_DIR/log_patterns.json    (fn_id → [log patterns])
 
 Env vars:
-  REPO_ROOT   — path to workspace source/ dir (set via REPO_ROOT env var)
-  OUTPUT_DIR  — path to workspace output/ dir (set via OUTPUT_DIR env var)
+  REPO_ROOT    — path to workspace source/ dir
+  OUTPUT_DIR   — path to workspace output/ dir
+  CONFIG_PATH  — path to config.yaml (optional; falls back to WORKSPACE_DIR/config.yaml)
+  WORKSPACE_DIR — path to workspace root (optional)
 """
 import re, ast, json, subprocess, collections, pathlib, sys, os, textwrap
 
-REPO_ROOT = pathlib.Path(os.environ.get("REPO_ROOT",
-    "workspaces/source"))
-OUT_DIR   = pathlib.Path(os.environ.get("OUTPUT_DIR",
-    "workspaces/output"))
+# ── Tree-sitter imports (graceful fallback if not installed) ─────────────────
+try:
+    import tree_sitter_haskell
+    from tree_sitter import Language, Parser
+    HS_LANGUAGE = Language(tree_sitter_haskell.language())
+    _TS_HASKELL = True
+except Exception as _e:
+    print(f"[warn] tree-sitter-haskell unavailable ({_e}); falling back to regex")
+    _TS_HASKELL = False
+
+try:
+    import tree_sitter_rust
+    from tree_sitter import Language, Parser
+    RS_LANGUAGE = Language(tree_sitter_rust.language())
+    _TS_RUST = True
+except Exception as _e:
+    print(f"[warn] tree-sitter-rust unavailable ({_e}); falling back to regex")
+    _TS_RUST = False
+
+try:
+    import tree_sitter_groovy
+    from tree_sitter import Language, Parser
+    GV_LANGUAGE = Language(tree_sitter_groovy.language())
+    _TS_GROOVY = True
+except Exception as _e:
+    print(f"[warn] tree-sitter-groovy unavailable ({_e}); falling back to regex")
+    _TS_GROOVY = False
+
+# ── Paths ────────────────────────────────────────────────────────────────────
+REPO_ROOT = pathlib.Path(os.environ.get("REPO_ROOT", "workspaces/source"))
+OUT_DIR   = pathlib.Path(os.environ.get("OUTPUT_DIR", "workspaces/output"))
 OUT_DIR.mkdir(exist_ok=True, parents=True)
 
 MAX_BODY_CHARS = 8000   # truncate very long bodies to keep memory sane
 MAX_BODY_LINES = 200    # ~5 screens of code
 
+# ── Config (service profiles) ────────────────────────────────────────────────
+def _load_config() -> dict:
+    """Load config.yaml; return empty dict on any failure."""
+    candidates = []
+    if os.environ.get("CONFIG_PATH"):
+        candidates.append(pathlib.Path(os.environ["CONFIG_PATH"]))
+    if os.environ.get("WORKSPACE_DIR"):
+        candidates.append(pathlib.Path(os.environ["WORKSPACE_DIR"]) / "config.yaml")
+    for p in candidates:
+        if p.exists():
+            try:
+                import yaml  # type: ignore
+                return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            except Exception as e:
+                print(f"[warn] Could not load config {p}: {e}")
+    return {}
+
+_CONFIG = _load_config()
+_SERVICE_PROFILES: dict = _CONFIG.get("service_profiles", {})
+
+def _service_meta(service: str) -> tuple[str, float]:
+    """Return (service_role, traffic_weight) for a service, with defaults."""
+    prof = _SERVICE_PROFILES.get(service, {})
+    return prof.get("role", ""), float(prof.get("traffic_weight", 1.0))
+
+
+# ── Tree-sitter helper ───────────────────────────────────────────────────────
+def _find_nodes(root, node_type: str) -> list:
+    results = []
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type == node_type:
+            results.append(n)
+        stack.extend(reversed(n.children))
+    return results
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# HASKELL PARSER
+# HASKELL PARSER  (tree-sitter primary, regex fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Log patterns for structured logging in Haskell codebases
 _HS_LOG_RE = re.compile(
     r'(?:logInfo|logError|logWarn|logDebug|Logger\.log|L\.log|runIO\s+\$\s+log)\s*'
     r'(?:\'[A-Z\w]+\')?\s*'
@@ -36,140 +101,349 @@ _HS_LOG_RE = re.compile(
 )
 
 _HS_CALL_RE = re.compile(
-    r'(?<![A-Z.\'"#])(?<![a-z0-9_])'       # not preceded by type/module chars
-    r'([a-z_][a-zA-Z0-9_\']*)'              # lowercase fn name
-    r'(?![a-zA-Z0-9_\'"=<>])',              # not followed by continuation
+    r'(?<![A-Z.\'"#])(?<![a-z0-9_])'
+    r'([a-z_][a-zA-Z0-9_\']*)'
+    r'(?![a-zA-Z0-9_\'"=<>])',
 )
 
+_HS_CALL_SKIP = frozenset({
+    "do", "let", "in", "where", "case", "of", "if", "then", "else",
+    "return", "pure", "when", "unless", "void", "fmap", "map", "filter",
+    "foldr", "foldl", "mapM", "mapM_", "forM", "forM_", "sequence",
+    "catch", "handle", "try", "throwIO", "evaluate", "liftIO",
+})
 
-def _extract_hs_body(src: str, name: str, sig_pos: int) -> str:
-    """
-    Extract the body of a Haskell function given its name and position of its
-    type signature.  Captures from the first definition line (name = ...) until
-    the next top-level definition or EOF.  Returns at most MAX_BODY_CHARS chars.
-    """
-    lines = src[sig_pos:].splitlines(keepends=True)
-    body_lines = []
-    in_body = False
-    top_level_re = re.compile(r'^[a-z_][a-zA-Z0-9_\']*\s*(?:[^=\n]*=|::)')
 
-    for i, line in enumerate(lines):
-        # Skip the type signature itself (line starts with name ::)
-        if i == 0 and re.match(rf'^{re.escape(name)}\s*::', line):
-            continue
-
-        # Start capturing at the definition line
-        if not in_body and re.match(rf'^{re.escape(name)}\b', line):
-            in_body = True
-
-        if in_body:
-            # Stop at next top-level definition (different name)
-            if i > 0 and top_level_re.match(line) and not re.match(rf'^{re.escape(name)}\b', line):
-                break
-            body_lines.append(line)
-            if len(body_lines) >= MAX_BODY_LINES:
-                body_lines.append("  -- [body truncated]\n")
-                break
-
-    body = "".join(body_lines).strip()
+def _truncate_body(body: str, comment_prefix: str = "--") -> str:
     if len(body) > MAX_BODY_CHARS:
-        return body[:MAX_BODY_CHARS] + "\n  -- [body truncated at char limit]"
+        return body[:MAX_BODY_CHARS] + f"\n{comment_prefix} [truncated]"
+    lines = body.splitlines(keepends=True)
+    if len(lines) > MAX_BODY_LINES:
+        return "".join(lines[:MAX_BODY_LINES]) + f"\n{comment_prefix} [truncated]"
     return body
 
 
-def parse_haskell_file(path: pathlib.Path) -> tuple[list, list, dict, dict, dict]:
-    """Returns: (symbols, edges, body_store, call_store, log_store)"""
-    src = path.read_text(encoding="utf-8", errors="replace")
+def _hs_extract_calls_logs(body: str, name: str) -> tuple[list, list]:
+    called = set()
+    for cm in _HS_CALL_RE.finditer(body):
+        fn = cm.group(1)
+        if fn != name and fn not in _HS_CALL_SKIP:
+            called.add(fn)
+    logs = [lm.group(1).strip('"') for lm in _HS_LOG_RE.finditer(body)]
+    return sorted(called), logs
+
+
+def _parse_haskell_ts(path: pathlib.Path, src: str, src_bytes: bytes,
+                      module: str, file_id: str, service: str,
+                      service_role: str, traffic_weight: float
+                      ) -> tuple[list, list, dict, dict, dict]:
+    """Tree-sitter Haskell parser."""
     symbols, edges = [], []
     body_store, call_store, log_store = {}, {}, {}
 
-    m = re.search(r"^module\s+([\w.]+)", src, re.MULTILINE)
-    module = m.group(1) if m else str(path.stem)
-    file_id = str(path.relative_to(REPO_ROOT))
-    service = path.parts[len(REPO_ROOT.parts)] if len(path.parts) > len(REPO_ROOT.parts) else "unknown"
+    parser = Parser(HS_LANGUAGE)
+    tree = parser.parse(src_bytes)
+    root = tree.root_node
 
     # Imports
+    for imp_node in _find_nodes(root, "import"):
+        mod_node = imp_node.child_by_field_name("module")
+        if mod_node:
+            edges.append({
+                "from": module,
+                "to":   mod_node.text.decode("utf-8", errors="replace"),
+                "kind": "import",
+                "lang": "haskell",
+            })
+
+    seen_ids: set = set()
+
+    # Type signatures → function symbols
+    for sig_node in _find_nodes(root, "signature"):
+        # The variable names appear before '::'; collect all variable children
+        names = []
+        type_parts = []
+        past_colons = False
+        for child in sig_node.children:
+            text = child.text.decode("utf-8", errors="replace").strip()
+            if child.type in ("::", "::"):
+                past_colons = True
+                continue
+            if text == "::":
+                past_colons = True
+                continue
+            if not past_colons:
+                if child.type == "variable":
+                    names.append(text)
+                elif child.type == "operator" and text == "::":
+                    past_colons = True
+            else:
+                type_parts.append(text)
+        type_str = " ".join(type_parts).strip()
+
+        for name in names:
+            nid = f"{module}.{name}"
+            if nid in seen_ids:
+                continue
+            seen_ids.add(nid)
+            symbols.append({
+                "id":             nid,
+                "name":           name,
+                "module":         module,
+                "kind":           "function",
+                "type":           type_str,
+                "file":           file_id,
+                "lang":           "haskell",
+                "service":        service,
+                "service_role":   service_role,
+                "traffic_weight": traffic_weight,
+                "ghost_deps":     [],
+                "commit_history": [],
+                "docstring":      "",
+            })
+
+    # Function definitions — extract bodies using byte offsets
+    for fn_node in _find_nodes(root, "function"):
+        name_node = fn_node.child_by_field_name("name")
+        if name_node is None:
+            # fallback: first variable child
+            for child in fn_node.children:
+                if child.type == "variable":
+                    name_node = child
+                    break
+        if name_node is None:
+            continue
+        name = name_node.text.decode("utf-8", errors="replace").strip()
+        nid = f"{module}.{name}"
+
+        # Ensure symbol exists even without a preceding signature
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            symbols.append({
+                "id":             nid,
+                "name":           name,
+                "module":         module,
+                "kind":           "function",
+                "type":           "",
+                "file":           file_id,
+                "lang":           "haskell",
+                "service":        service,
+                "service_role":   service_role,
+                "traffic_weight": traffic_weight,
+                "ghost_deps":     [],
+                "commit_history": [],
+                "docstring":      "",
+            })
+
+        if nid not in body_store:
+            body_bytes = src_bytes[fn_node.start_byte:fn_node.end_byte]
+            body = body_bytes.decode("utf-8", errors="replace")
+            body = _truncate_body(body, "--")
+            if body:
+                body_store[nid] = body
+                called, logs = _hs_extract_calls_logs(body, name)
+                call_store[nid] = {"callees": called, "callers": []}
+                if logs:
+                    log_store[nid] = logs
+
+    # Data / newtype / type aliases
+    for node_type in ("data_type", "type_alias", "newtype"):
+        for decl_node in _find_nodes(root, node_type):
+            name_node = decl_node.child_by_field_name("name")
+            if name_node is None:
+                for child in decl_node.children:
+                    if child.type == "constructor" or (child.type[0].isupper() and len(child.type) > 1):
+                        name_node = child
+                        break
+                    if child.type == "name":
+                        name_node = child
+                        break
+            if name_node is None:
+                continue
+            name = name_node.text.decode("utf-8", errors="replace").strip()
+            if not name or not name[0].isupper():
+                continue
+            nid = f"{module}.{name}"
+            if nid not in seen_ids:
+                seen_ids.add(nid)
+                symbols.append({
+                    "id":             nid,
+                    "name":           name,
+                    "module":         module,
+                    "kind":           "type",
+                    "type":           "",
+                    "file":           file_id,
+                    "lang":           "haskell",
+                    "service":        service,
+                    "service_role":   service_role,
+                    "traffic_weight": traffic_weight,
+                    "ghost_deps":     [],
+                    "commit_history": [],
+                    "docstring":      "",
+                })
+
+    # Fallback: also capture data/newtype/type via regex for names tree-sitter misses
+    for decl in re.finditer(r"^(?:data|newtype|type)\s+([A-Z][a-zA-Z0-9_']*)", src, re.MULTILINE):
+        name = decl.group(1)
+        nid = f"{module}.{name}"
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            symbols.append({
+                "id":             nid,
+                "name":           name,
+                "module":         module,
+                "kind":           "type",
+                "type":           "",
+                "file":           file_id,
+                "lang":           "haskell",
+                "service":        service,
+                "service_role":   service_role,
+                "traffic_weight": traffic_weight,
+                "ghost_deps":     [],
+                "commit_history": [],
+                "docstring":      "",
+            })
+
+    # Class instances → edges
+    for inst in re.finditer(
+        r"^instance\s+.*?([A-Z][a-zA-Z0-9_']*)\s+([A-Z][a-zA-Z0-9_']*)", src, re.MULTILINE
+    ):
+        edges.append({
+            "from": f"{module}.{inst.group(2)}",
+            "to":   f"{module}.{inst.group(1)}",
+            "kind": "instance",
+            "lang": "haskell",
+        })
+
+    return symbols, edges, body_store, call_store, log_store
+
+
+def _parse_haskell_regex(path: pathlib.Path, src: str,
+                         module: str, file_id: str, service: str,
+                         service_role: str, traffic_weight: float
+                         ) -> tuple[list, list, dict, dict, dict]:
+    """Pure-regex Haskell parser (fallback)."""
+    symbols, edges = [], []
+    body_store, call_store, log_store = {}, {}, {}
+
     for imp in re.finditer(r"^import\s+(?:qualified\s+)?([\w.]+)", src, re.MULTILINE):
         edges.append({"from": module, "to": imp.group(1), "kind": "import", "lang": "haskell"})
 
-    # Type signatures
-    seen_sigs = set()
-    for sig in re.finditer(r"^([a-z_][a-zA-Z0-9_']*(?:,\s*[a-z_][a-zA-Z0-9_']*)*)\s*::\s*(.+)", src, re.MULTILINE):
+    seen_ids: set = set()
+    top_level_re = re.compile(r'^[a-z_][a-zA-Z0-9_\']*\s*(?:[^=\n]*=|::)')
+
+    for sig in re.finditer(
+        r"^([a-z_][a-zA-Z0-9_']*(?:,\s*[a-z_][a-zA-Z0-9_']*)*)\s*::\s*(.+)",
+        src, re.MULTILINE
+    ):
         names_raw = sig.group(1)
         type_str  = sig.group(2).strip()
         sig_pos   = sig.start()
 
         for name in [n.strip() for n in names_raw.split(",")]:
             nid = f"{module}.{name}"
-            if nid in seen_sigs:
+            if nid in seen_ids:
                 continue
-            seen_sigs.add(nid)
-
+            seen_ids.add(nid)
             symbols.append({
-                "id":      nid,
-                "name":    name,
-                "module":  module,
-                "kind":    "function",
-                "type":    type_str,
-                "file":    file_id,
-                "lang":    "haskell",
-                "service": service,
+                "id":             nid,
+                "name":           name,
+                "module":         module,
+                "kind":           "function",
+                "type":           type_str,
+                "file":           file_id,
+                "lang":           "haskell",
+                "service":        service,
+                "service_role":   service_role,
+                "traffic_weight": traffic_weight,
+                "ghost_deps":     [],
+                "commit_history": [],
+                "docstring":      "",
             })
 
-            # Extract body
-            body = _extract_hs_body(src, name, sig_pos)
+            # Body extraction (regex — starts after the sig line)
+            lines = src[sig_pos:].splitlines(keepends=True)
+            body_lines = []
+            in_body = False
+            for i, line in enumerate(lines):
+                if i == 0 and re.match(rf'^{re.escape(name)}\s*::', line):
+                    continue
+                if not in_body and re.match(rf'^{re.escape(name)}\b', line):
+                    in_body = True
+                if in_body:
+                    if i > 0 and top_level_re.match(line) and not re.match(rf'^{re.escape(name)}\b', line):
+                        break
+                    body_lines.append(line)
+                    if len(body_lines) >= MAX_BODY_LINES:
+                        body_lines.append("  -- [truncated]\n")
+                        break
+            body = "".join(body_lines).strip()
+            if len(body) > MAX_BODY_CHARS:
+                body = body[:MAX_BODY_CHARS] + "\n  -- [truncated]"
             if body:
                 body_store[nid] = body
-
-                # Extract callees from body (approximate — lowercase identifiers)
-                called = set()
-                for cm in _HS_CALL_RE.finditer(body):
-                    fn = cm.group(1)
-                    if fn not in {name, "do", "let", "in", "where", "case", "of",
-                                  "if", "then", "else", "return", "pure", "when",
-                                  "unless", "void", "fmap", "map", "filter",
-                                  "foldr", "foldl", "mapM", "mapM_", "forM",
-                                  "forM_", "sequence", "catch", "handle",
-                                  "try", "throwIO", "evaluate", "liftIO"}:
-                        called.add(fn)
-                call_store[nid] = {"callees": sorted(called), "callers": []}
-
-                # Extract log patterns
-                logs = []
-                for lm in _HS_LOG_RE.finditer(body):
-                    logs.append(lm.group(1).strip('"'))
+                called, logs = _hs_extract_calls_logs(body, name)
+                call_store[nid] = {"callees": called, "callers": []}
                 if logs:
                     log_store[nid] = logs
 
-    # Data / newtype / type
     for decl in re.finditer(r"^(?:data|newtype|type)\s+([A-Z][a-zA-Z0-9_']*)", src, re.MULTILINE):
         nid = f"{module}.{decl.group(1)}"
-        if nid not in seen_sigs:
+        if nid not in seen_ids:
+            seen_ids.add(nid)
             symbols.append({
-                "id":      nid,
-                "name":    decl.group(1),
-                "module":  module,
-                "kind":    "type",
-                "type":    "",
-                "file":    file_id,
-                "lang":    "haskell",
-                "service": service,
+                "id":             nid,
+                "name":           decl.group(1),
+                "module":         module,
+                "kind":           "type",
+                "type":           "",
+                "file":           file_id,
+                "lang":           "haskell",
+                "service":        service,
+                "service_role":   service_role,
+                "traffic_weight": traffic_weight,
+                "ghost_deps":     [],
+                "commit_history": [],
+                "docstring":      "",
             })
 
-    # Class instances
-    for inst in re.finditer(r"^instance\s+.*?([A-Z][a-zA-Z0-9_']*)\s+([A-Z][a-zA-Z0-9_']*)", src, re.MULTILINE):
+    for inst in re.finditer(
+        r"^instance\s+.*?([A-Z][a-zA-Z0-9_']*)\s+([A-Z][a-zA-Z0-9_']*)", src, re.MULTILINE
+    ):
         edges.append({
             "from": f"{module}.{inst.group(2)}",
             "to":   f"{module}.{inst.group(1)}",
             "kind": "instance",
-            "lang": "haskell"
+            "lang": "haskell",
         })
 
     return symbols, edges, body_store, call_store, log_store
 
 
+def parse_haskell_file(path: pathlib.Path) -> tuple[list, list, dict, dict, dict]:
+    """Returns: (symbols, edges, body_store, call_store, log_store)"""
+    src_bytes = path.read_bytes()
+    src = src_bytes.decode("utf-8", errors="replace")
+
+    m = re.search(r"^module\s+([\w.]+)", src, re.MULTILINE)
+    module = m.group(1) if m else str(path.stem)
+    file_id = str(path.relative_to(REPO_ROOT))
+    service = path.parts[len(REPO_ROOT.parts)] if len(path.parts) > len(REPO_ROOT.parts) else "unknown"
+    service_role, traffic_weight = _service_meta(service)
+
+    if _TS_HASKELL:
+        try:
+            return _parse_haskell_ts(path, src, src_bytes, module, file_id,
+                                     service, service_role, traffic_weight)
+        except Exception as e:
+            print(f"  [warn] tree-sitter Haskell failed for {path.name}: {e}; using regex")
+
+    return _parse_haskell_regex(path, src, module, file_id,
+                                service, service_role, traffic_weight)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# RUST PARSER
+# RUST PARSER  (tree-sitter primary, regex fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _RS_LOG_RE = re.compile(
@@ -178,29 +452,133 @@ _RS_LOG_RE = re.compile(
     re.MULTILINE
 )
 
-_RS_CALL_RE = re.compile(
-    r'(?:'
-    r'([a-z_][a-zA-Z0-9_]*)\s*\('       # direct call: fn_name(
-    r'|'
-    r'\.([a-z_][a-zA-Z0-9_]*)\s*\('     # method call: .method(
-    r')',
-)
+_RS_CALL_SKIP = frozenset({
+    "new", "from", "into", "clone", "unwrap", "expect",
+    "map", "and_then", "ok_or", "iter", "collect", "len",
+    "push", "get", "insert",
+})
 
 
-def _extract_rust_body(src: str, fn_start: int) -> str:
-    """
-    Extract the body of a Rust function starting at fn_start.
-    Finds the matching opening { and returns everything until the matching }.
-    """
-    pos = fn_start
-    # Find opening brace
-    brace_pos = src.find('{', pos)
+def _rs_body_from_node(src_bytes: bytes, node) -> str:
+    body_bytes = src_bytes[node.start_byte:node.end_byte]
+    body = body_bytes.decode("utf-8", errors="replace")
+    return _truncate_body(body, "//")
+
+
+def _rs_extract_calls_logs(body: str, name: str) -> tuple[list, list]:
+    called = set()
+    for cm in re.finditer(
+        r'(?:([a-z_][a-zA-Z0-9_]*)\s*\(|\.([a-z_][a-zA-Z0-9_]*)\s*\()', body
+    ):
+        fn = cm.group(1) or cm.group(2)
+        if fn and fn != name and fn not in _RS_CALL_SKIP:
+            called.add(fn)
+    logs = [lm.group(0)[:120].strip() for lm in _RS_LOG_RE.finditer(body)]
+    return sorted(called), logs
+
+
+def _parse_rust_ts(path: pathlib.Path, src: str, src_bytes: bytes,
+                   module: str, file_id: str, service: str,
+                   service_role: str, traffic_weight: float
+                   ) -> tuple[list, list, dict, dict, dict]:
+    """Tree-sitter Rust parser."""
+    symbols, edges = [], []
+    body_store, call_store, log_store = {}, {}, {}
+
+    parser = Parser(RS_LANGUAGE)
+    tree = parser.parse(src_bytes)
+    root = tree.root_node
+
+    # Imports
+    for use_node in _find_nodes(root, "use_declaration"):
+        edges.append({
+            "from": module,
+            "to":   use_node.text.decode("utf-8", errors="replace").strip().lstrip("use ").rstrip(";"),
+            "kind": "import",
+            "lang": "rust",
+        })
+
+    seen_ids: set = set()
+
+    # Functions
+    for fn_node in _find_nodes(root, "function_item"):
+        name_node = fn_node.child_by_field_name("name")
+        if name_node is None:
+            continue
+        name = name_node.text.decode("utf-8", errors="replace").strip()
+
+        params_node = fn_node.child_by_field_name("parameters")
+        params = params_node.text.decode("utf-8", errors="replace").strip() if params_node else ""
+
+        ret_node = fn_node.child_by_field_name("return_type")
+        ret = ret_node.text.decode("utf-8", errors="replace").strip() if ret_node else ""
+        type_str = f"{params} -> {ret}".strip(" ->") if ret else params
+
+        nid = f"{module}::{name}"
+        if nid in seen_ids:
+            continue
+        seen_ids.add(nid)
+
+        symbols.append({
+            "id":             nid,
+            "name":           name,
+            "module":         module,
+            "kind":           "function",
+            "type":           type_str,
+            "file":           file_id,
+            "lang":           "rust",
+            "service":        service,
+            "service_role":   service_role,
+            "traffic_weight": traffic_weight,
+            "ghost_deps":     [],
+            "commit_history": [],
+            "docstring":      "",
+        })
+
+        body = _rs_body_from_node(src_bytes, fn_node)
+        if body:
+            body_store[nid] = body
+            called, logs = _rs_extract_calls_logs(body, name)
+            call_store[nid] = {"callees": called, "callers": []}
+            if logs:
+                log_store[nid] = logs
+
+    # Types: struct, enum, trait
+    for type_node_type in ("struct_item", "enum_item", "trait_item"):
+        for decl_node in _find_nodes(root, type_node_type):
+            name_node = decl_node.child_by_field_name("name")
+            if name_node is None:
+                continue
+            name = name_node.text.decode("utf-8", errors="replace").strip()
+            nid = f"{module}::{name}"
+            if nid not in seen_ids:
+                seen_ids.add(nid)
+                symbols.append({
+                    "id":             nid,
+                    "name":           name,
+                    "module":         module,
+                    "kind":           "type",
+                    "type":           "",
+                    "file":           file_id,
+                    "lang":           "rust",
+                    "service":        service,
+                    "service_role":   service_role,
+                    "traffic_weight": traffic_weight,
+                    "ghost_deps":     [],
+                    "commit_history": [],
+                    "docstring":      "",
+                })
+
+    return symbols, edges, body_store, call_store, log_store
+
+
+def _extract_rust_body_regex(src: str, fn_start: int) -> str:
+    """Brace-matching body extraction for Rust/Groovy regex fallback."""
+    brace_pos = src.find('{', fn_start)
     if brace_pos == -1:
         return ""
-
     depth = 0
     i = brace_pos
-    body_chars = 0
     while i < len(src):
         ch = src[i]
         if ch == '{':
@@ -210,21 +588,21 @@ def _extract_rust_body(src: str, fn_start: int) -> str:
             if depth == 0:
                 body = src[fn_start:i+1].strip()
                 if len(body) > MAX_BODY_CHARS:
-                    return body[:MAX_BODY_CHARS] + "\n// [body truncated at char limit]"
+                    return body[:MAX_BODY_CHARS] + "\n// [truncated]"
                 return body
-        body_chars += 1
-        if body_chars > MAX_BODY_CHARS * 2:
-            return src[fn_start:fn_start + MAX_BODY_CHARS] + "\n// [body truncated]"
+        if i - fn_start > MAX_BODY_CHARS * 2:
+            return src[fn_start:fn_start + MAX_BODY_CHARS] + "\n// [truncated]"
         i += 1
     return ""
 
 
-def parse_rust_file(path: pathlib.Path, service: str) -> tuple[list, list, dict, dict, dict]:
-    src = path.read_text(encoding="utf-8", errors="replace")
+def _parse_rust_regex(path: pathlib.Path, src: str,
+                      module: str, file_id: str, service: str,
+                      service_role: str, traffic_weight: float
+                      ) -> tuple[list, list, dict, dict, dict]:
+    """Pure-regex Rust parser (fallback)."""
     symbols, edges = [], []
     body_store, call_store, log_store = {}, {}, {}
-    file_id = str(path.relative_to(REPO_ROOT))
-    module  = str(path.relative_to(REPO_ROOT)).replace("/", "::").replace("\\", "::").removesuffix(".rs")
 
     for use in re.finditer(r"^use\s+([\w::{}, *]+);", src, re.MULTILINE):
         edges.append({"from": module, "to": use.group(1), "kind": "import", "lang": "rust"})
@@ -241,62 +619,81 @@ def parse_rust_file(path: pathlib.Path, service: str) -> tuple[list, list, dict,
         nid     = f"{module}::{name}"
 
         symbols.append({
-            "id":      nid,
-            "name":    name,
-            "module":  module,
-            "kind":    "function",
-            "type":    type_str,
-            "file":    file_id,
-            "lang":    "rust",
-            "service": service,
+            "id":             nid,
+            "name":           name,
+            "module":         module,
+            "kind":           "function",
+            "type":           type_str,
+            "file":           file_id,
+            "lang":           "rust",
+            "service":        service,
+            "service_role":   service_role,
+            "traffic_weight": traffic_weight,
+            "ghost_deps":     [],
+            "commit_history": [],
+            "docstring":      "",
         })
 
-        body = _extract_rust_body(src, fn_match.start())
+        body = _extract_rust_body_regex(src, fn_match.start())
         if body:
             body_store[nid] = body
-
-            called = set()
-            for cm in _RS_CALL_RE.finditer(body):
-                fn_called = cm.group(1) or cm.group(2)
-                if fn_called and fn_called not in {name, "new", "from", "into",
-                                                    "clone", "unwrap", "expect",
-                                                    "map", "and_then", "ok_or",
-                                                    "iter", "collect", "len",
-                                                    "push", "get", "insert"}:
-                    called.add(fn_called)
-            call_store[nid] = {"callees": sorted(called), "callers": []}
-
-            logs = []
-            for lm in _RS_LOG_RE.finditer(body):
-                logs.append(lm.group(0)[:120].strip())
+            called, logs = _rs_extract_calls_logs(body, name)
+            call_store[nid] = {"callees": called, "callers": []}
             if logs:
                 log_store[nid] = logs
 
-    for decl in re.finditer(r"^(?:pub(?:\([\w]+\))?\s+)?(?:struct|enum|trait)\s+([A-Z][a-zA-Z0-9_]*)", src, re.MULTILINE):
+    for decl in re.finditer(
+        r"^(?:pub(?:\([\w]+\))?\s+)?(?:struct|enum|trait)\s+([A-Z][a-zA-Z0-9_]*)",
+        src, re.MULTILINE
+    ):
         symbols.append({
-            "id":      f"{module}::{decl.group(1)}",
-            "name":    decl.group(1),
-            "module":  module,
-            "kind":    "type",
-            "type":    "",
-            "file":    file_id,
-            "lang":    "rust",
-            "service": service,
+            "id":             f"{module}::{decl.group(1)}",
+            "name":           decl.group(1),
+            "module":         module,
+            "kind":           "type",
+            "type":           "",
+            "file":           file_id,
+            "lang":           "rust",
+            "service":        service,
+            "service_role":   service_role,
+            "traffic_weight": traffic_weight,
+            "ghost_deps":     [],
+            "commit_history": [],
+            "docstring":      "",
         })
 
     return symbols, edges, body_store, call_store, log_store
 
 
+def parse_rust_file(path: pathlib.Path, service: str) -> tuple[list, list, dict, dict, dict]:
+    src_bytes = path.read_bytes()
+    src = src_bytes.decode("utf-8", errors="replace")
+    file_id = str(path.relative_to(REPO_ROOT))
+    module  = file_id.replace("/", "::").replace("\\", "::").removesuffix(".rs")
+    service_role, traffic_weight = _service_meta(service)
+
+    if _TS_RUST:
+        try:
+            return _parse_rust_ts(path, src, src_bytes, module, file_id,
+                                  service, service_role, traffic_weight)
+        except Exception as e:
+            print(f"  [warn] tree-sitter Rust failed for {path.name}: {e}; using regex")
+
+    return _parse_rust_regex(path, src, module, file_id,
+                             service, service_role, traffic_weight)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# PYTHON PARSER
+# PYTHON PARSER  (ast module — already correct, kept as-is with minor fixes)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def parse_python_file(path: pathlib.Path, service: str) -> tuple[list, list, dict, dict, dict]:
     symbols, edges = [], []
     body_store, call_store, log_store = {}, {}, {}
     file_id = str(path.relative_to(REPO_ROOT))
-    module  = str(path.relative_to(REPO_ROOT)).replace("/", ".").replace("\\", ".").removesuffix(".py")
+    module  = file_id.replace("/", ".").replace("\\", ".").removesuffix(".py")
     src     = path.read_text(encoding="utf-8", errors="replace")
+    service_role, traffic_weight = _service_meta(service)
 
     try:
         tree = ast.parse(src)
@@ -308,7 +705,8 @@ def parse_python_file(path: pathlib.Path, service: str) -> tuple[list, list, dic
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             mod = node.module if isinstance(node, ast.ImportFrom) else None
-            for alias in (node.names if isinstance(node, ast.Import) else [ast.alias(name=mod or "")]):
+            for alias in (node.names if isinstance(node, ast.Import)
+                          else [ast.alias(name=mod or "")]):
                 target = mod or alias.name
                 if target:
                     edges.append({"from": module, "to": target, "kind": "import", "lang": "python"})
@@ -317,27 +715,28 @@ def parse_python_file(path: pathlib.Path, service: str) -> tuple[list, list, dic
             args = [a.arg for a in node.args.args]
             nid  = f"{module}.{node.name}"
             symbols.append({
-                "id":        nid,
-                "name":      node.name,
-                "module":    module,
-                "kind":      "function",
-                "type":      f"({', '.join(args)})",
-                "file":      file_id,
-                "lang":      "python",
-                "service":   service,
-                "docstring": ast.get_docstring(node) or "",
+                "id":             nid,
+                "name":           node.name,
+                "module":         module,
+                "kind":           "function",
+                "type":           f"({', '.join(args)})",
+                "file":           file_id,
+                "lang":           "python",
+                "service":        service,
+                "service_role":   service_role,
+                "traffic_weight": traffic_weight,
+                "ghost_deps":     [],
+                "commit_history": [],
+                "docstring":      ast.get_docstring(node) or "",
             })
-            # Extract body as source lines
             if hasattr(node, 'lineno') and hasattr(node, 'end_lineno'):
                 body_lines = src_lines[node.lineno - 1 : min(node.end_lineno, node.lineno + MAX_BODY_LINES)]
                 body = "\n".join(body_lines)
                 if body:
                     if len(body) > MAX_BODY_CHARS:
-                        body_store[nid] = body[:MAX_BODY_CHARS] + "\n# [body truncated at char limit]"
-                    else:
-                        body_store[nid] = body
+                        body = body[:MAX_BODY_CHARS] + "\n# [truncated]"
+                    body_store[nid] = body
 
-                    # Callees: find function calls in the body
                     called = set()
                     for call_node in ast.walk(node):
                         if isinstance(call_node, ast.Call):
@@ -349,22 +748,26 @@ def parse_python_file(path: pathlib.Path, service: str) -> tuple[list, list, dic
 
         elif isinstance(node, ast.ClassDef):
             symbols.append({
-                "id":        f"{module}.{node.name}",
-                "name":      node.name,
-                "module":    module,
-                "kind":      "class",
-                "type":      "",
-                "file":      file_id,
-                "lang":      "python",
-                "service":   service,
-                "docstring": ast.get_docstring(node) or "",
+                "id":             f"{module}.{node.name}",
+                "name":           node.name,
+                "module":         module,
+                "kind":           "class",
+                "type":           "",
+                "file":           file_id,
+                "lang":           "python",
+                "service":        service,
+                "service_role":   service_role,
+                "traffic_weight": traffic_weight,
+                "ghost_deps":     [],
+                "commit_history": [],
+                "docstring":      ast.get_docstring(node) or "",
             })
 
     return symbols, edges, body_store, call_store, log_store
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# GROOVY PARSER (for graphh — legacy Grails service)
+# GROOVY PARSER  (tree-sitter primary, regex fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _GROOVY_LOG_RE = re.compile(
@@ -372,71 +775,192 @@ _GROOVY_LOG_RE = re.compile(
     re.MULTILINE
 )
 
+_GROOVY_SKIP_PARTS = frozenset({
+    "grails-app", "controllers", "services", "domain", "src", "main", "groovy"
+})
 
-def parse_groovy_file(path: pathlib.Path, service: str) -> tuple[list, list, dict, dict, dict]:
-    src = path.read_text(encoding="utf-8", errors="replace")
-    symbols, edges = [], []
-    body_store, call_store, log_store = {}, {}, {}
-    file_id = str(path.relative_to(REPO_ROOT))
 
-    # Derive module from file path
-    # e.g. graphh/grails-app/controllers/FooController.groovy → graphh.FooController
+def _groovy_module(path: pathlib.Path, service: str) -> str:
     try:
         rel = path.relative_to(REPO_ROOT / service)
-        parts = [p for p in rel.parts if p not in ("grails-app", "controllers",
-                                                     "services", "domain",
-                                                     "src", "main", "groovy")]
-        module = service + "." + ".".join(parts).removesuffix(".groovy")
+        parts = [p for p in rel.parts if p not in _GROOVY_SKIP_PARTS]
+        return service + "." + ".".join(parts).removesuffix(".groovy")
     except Exception:
-        module = service + "." + path.stem
+        return service + "." + path.stem
 
-    # Class declaration
-    for cls in re.finditer(r'(?:class|interface)\s+([A-Z][a-zA-Z0-9_]*)', src):
+
+def _parse_groovy_ts(path: pathlib.Path, src: str, src_bytes: bytes,
+                     module: str, file_id: str, service: str,
+                     service_role: str, traffic_weight: float
+                     ) -> tuple[list, list, dict, dict, dict]:
+    """Tree-sitter Groovy parser."""
+    symbols, edges = [], []
+    body_store, call_store, log_store = {}, {}, {}
+
+    parser = Parser(GV_LANGUAGE)
+    tree = parser.parse(src_bytes)
+    root = tree.root_node
+
+    # Imports
+    for imp_node in _find_nodes(root, "import_declaration"):
+        imp_text = imp_node.text.decode("utf-8", errors="replace").strip()
+        imp_text = re.sub(r'^import\s+', '', imp_text).rstrip(";")
+        edges.append({"from": module, "to": imp_text, "kind": "import", "lang": "groovy"})
+
+    seen_ids: set = set()
+
+    # Classes
+    for cls_node in _find_nodes(root, "class_declaration"):
+        name_node = cls_node.child_by_field_name("name")
+        if name_node is None:
+            for child in cls_node.children:
+                if child.type == "identifier":
+                    name_node = child
+                    break
+        if name_node is None:
+            continue
+        name = name_node.text.decode("utf-8", errors="replace").strip()
+        nid = f"{module}.{name}"
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            symbols.append({
+                "id":             nid,
+                "name":           name,
+                "module":         module,
+                "kind":           "class",
+                "type":           "",
+                "file":           file_id,
+                "lang":           "groovy",
+                "service":        service,
+                "service_role":   service_role,
+                "traffic_weight": traffic_weight,
+                "ghost_deps":     [],
+                "commit_history": [],
+                "docstring":      "",
+            })
+
+    # Methods
+    for meth_node in _find_nodes(root, "method_declaration"):
+        name_node = meth_node.child_by_field_name("name")
+        if name_node is None:
+            for child in meth_node.children:
+                if child.type == "identifier":
+                    name_node = child
+                    break
+        if name_node is None:
+            continue
+        name = name_node.text.decode("utf-8", errors="replace").strip()
+        nid = f"{module}.{name}"
+        if nid in seen_ids:
+            continue
+        seen_ids.add(nid)
+
+        body_bytes = src_bytes[meth_node.start_byte:meth_node.end_byte]
+        body = body_bytes.decode("utf-8", errors="replace")
+        body = _truncate_body(body, "//")
+
         symbols.append({
-            "id":      f"{module}.{cls.group(1)}",
-            "name":    cls.group(1),
-            "module":  module,
-            "kind":    "class",
-            "type":    "",
-            "file":    file_id,
-            "lang":    "groovy",
-            "service": service,
+            "id":             nid,
+            "name":           name,
+            "module":         module,
+            "kind":           "function",
+            "type":           "",
+            "file":           file_id,
+            "lang":           "groovy",
+            "service":        service,
+            "service_role":   service_role,
+            "traffic_weight": traffic_weight,
+            "ghost_deps":     [],
+            "commit_history": [],
+            "docstring":      "",
         })
-
-    # Method declarations: def methodName(...) or TypeName methodName(...)
-    method_re = re.compile(
-        r'(?:def|void|String|boolean|int|long|Map|List|Object)\s+([a-z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)',
-        re.MULTILINE
-    )
-    for fn in method_re.finditer(src):
-        name    = fn.group(1)
-        params  = fn.group(2).strip()
-        nid     = f"{module}.{name}"
-
-        symbols.append({
-            "id":      nid,
-            "name":    name,
-            "module":  module,
-            "kind":    "function",
-            "type":    f"({params})",
-            "file":    file_id,
-            "lang":    "groovy",
-            "service": service,
-        })
-
-        # Try to get body
-        body = _extract_rust_body(src, fn.start())  # same brace-matching logic
         if body:
             body_store[nid] = body
             logs = [lm.group(0)[:120] for lm in _GROOVY_LOG_RE.finditer(body)]
             if logs:
                 log_store[nid] = logs
 
-    # Imports
+    return symbols, edges, body_store, call_store, log_store
+
+
+def _parse_groovy_regex(path: pathlib.Path, src: str,
+                        module: str, file_id: str, service: str,
+                        service_role: str, traffic_weight: float
+                        ) -> tuple[list, list, dict, dict, dict]:
+    """Pure-regex Groovy parser (fallback)."""
+    symbols, edges = [], []
+    body_store, call_store, log_store = {}, {}, {}
+
+    for cls in re.finditer(r'(?:class|interface)\s+([A-Z][a-zA-Z0-9_]*)', src):
+        symbols.append({
+            "id":             f"{module}.{cls.group(1)}",
+            "name":           cls.group(1),
+            "module":         module,
+            "kind":           "class",
+            "type":           "",
+            "file":           file_id,
+            "lang":           "groovy",
+            "service":        service,
+            "service_role":   service_role,
+            "traffic_weight": traffic_weight,
+            "ghost_deps":     [],
+            "commit_history": [],
+            "docstring":      "",
+        })
+
+    method_re = re.compile(
+        r'(?:def|void|String|boolean|int|long|Map|List|Object)\s+'
+        r'([a-z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)',
+        re.MULTILINE
+    )
+    for fn in method_re.finditer(src):
+        name   = fn.group(1)
+        params = fn.group(2).strip()
+        nid    = f"{module}.{name}"
+        symbols.append({
+            "id":             nid,
+            "name":           name,
+            "module":         module,
+            "kind":           "function",
+            "type":           f"({params})",
+            "file":           file_id,
+            "lang":           "groovy",
+            "service":        service,
+            "service_role":   service_role,
+            "traffic_weight": traffic_weight,
+            "ghost_deps":     [],
+            "commit_history": [],
+            "docstring":      "",
+        })
+        body = _extract_rust_body_regex(src, fn.start())
+        if body:
+            body_store[nid] = body
+            logs = [lm.group(0)[:120] for lm in _GROOVY_LOG_RE.finditer(body)]
+            if logs:
+                log_store[nid] = logs
+
     for imp in re.finditer(r'^import\s+([\w.]+)', src, re.MULTILINE):
         edges.append({"from": module, "to": imp.group(1), "kind": "import", "lang": "groovy"})
 
     return symbols, edges, body_store, call_store, log_store
+
+
+def parse_groovy_file(path: pathlib.Path, service: str) -> tuple[list, list, dict, dict, dict]:
+    src_bytes = path.read_bytes()
+    src = src_bytes.decode("utf-8", errors="replace")
+    file_id = str(path.relative_to(REPO_ROOT))
+    module = _groovy_module(path, service)
+    service_role, traffic_weight = _service_meta(service)
+
+    if _TS_GROOVY:
+        try:
+            return _parse_groovy_ts(path, src, src_bytes, module, file_id,
+                                    service, service_role, traffic_weight)
+        except Exception as e:
+            print(f"  [warn] tree-sitter Groovy failed for {path.name}: {e}; using regex")
+
+    return _parse_groovy_regex(path, src, module, file_id,
+                               service, service_role, traffic_weight)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -454,7 +978,8 @@ GHOST_PATTERNS = {
     "mysql":       re.compile(r'mysql://|MYSQL_|mysqlclient', re.I),
 }
 
-def detect_ghosts(path: pathlib.Path) -> list[str]:
+
+def detect_ghosts(path: pathlib.Path) -> list:
     try:
         src = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
@@ -488,17 +1013,21 @@ def extract_git_signals(repo_path: pathlib.Path) -> dict:
         elif line.strip() and current:
             current["files"].append(line.strip())
 
-    co_change = collections.Counter()
+    co_change: collections.Counter = collections.Counter()
     for c in commits:
         files = c["files"]
         for i, f1 in enumerate(files):
             for f2 in files[i+1:]:
                 co_change[tuple(sorted([f1, f2]))] += 1
 
-    file_history = collections.defaultdict(list)
+    file_history: dict = collections.defaultdict(list)
     for c in commits:
         for f in c["files"]:
-            file_history[f].append({"sha": c["sha"][:7], "msg": c["msg"], "date": c["date"][:10]})
+            file_history[f].append({
+                "sha":  c["sha"][:7],
+                "msg":  c["msg"],
+                "date": c["date"][:10],
+            })
 
     return {
         "co_change_edges": [
@@ -514,25 +1043,17 @@ def extract_git_signals(repo_path: pathlib.Path) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def build_caller_index(call_store: dict) -> dict:
-    """
-    For each function that has callees, add itself as a caller of each callee.
-    Only resolves within same-module or fully-qualified matches.
-    Returns updated call_store with `callers` populated.
-    """
-    # Build name -> [nid] index for fast lookup
-    name_to_ids = collections.defaultdict(list)
+    name_to_ids: dict = collections.defaultdict(list)
     for nid in call_store:
         short_name = nid.split(".")[-1].split("::")[-1]
         name_to_ids[short_name].append(nid)
 
-    caller_map = collections.defaultdict(set)  # nid -> set of caller nids
-
+    caller_map: dict = collections.defaultdict(set)
     for caller_nid, info in call_store.items():
         for callee_name in info["callees"]:
             for callee_nid in name_to_ids.get(callee_name, []):
                 caller_map[callee_nid].add(caller_nid)
 
-    # Merge back
     for nid, callers in caller_map.items():
         if nid in call_store:
             call_store[nid]["callers"] = sorted(callers)
@@ -545,14 +1066,17 @@ def build_caller_index(call_store: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    all_symbols, all_edges = [], []
+    all_symbols: list = []
+    all_edges:   list = []
     all_bodies:  dict = {}
     all_calls:   dict = {}
     all_logs:    dict = {}
-    ghost_map = collections.defaultdict(list)
+    ghost_map: dict = collections.defaultdict(list)
 
     services = [p for p in REPO_ROOT.iterdir() if p.is_dir() and not p.name.startswith(".")]
     print(f"Found {len(services)} service directories: {[s.name for s in services]}")
+    if _SERVICE_PROFILES:
+        print(f"Loaded service profiles for: {list(_SERVICE_PROFILES.keys())}")
 
     for service_dir in sorted(services):
         service_name = service_dir.name
@@ -566,13 +1090,16 @@ def main():
             and not any(p in f.parts for p in ["dist", "dist-newstyle", ".stack-work", ".juspay"])
         ]
         for f in hs_files:
-            s, e, b, c, l = parse_haskell_file(f)
-            all_symbols.extend(s); all_edges.extend(e)
-            all_bodies.update(b); all_calls.update(c); all_logs.update(l)
-            for sym in s:
+            try:
+                s, e, b, c, l = parse_haskell_file(f)
+                all_symbols.extend(s); all_edges.extend(e)
+                all_bodies.update(b); all_calls.update(c); all_logs.update(l)
                 ghosts = detect_ghosts(f)
                 if ghosts:
-                    ghost_map[sym["id"]].extend(ghosts)
+                    for sym in s:
+                        ghost_map[sym["id"]].extend(ghosts)
+            except Exception as exc:
+                print(f"  [error] {f}: {exc}")
         hs_sym = len(all_symbols) - before_sym
         hs_with_body = sum(1 for s in all_symbols[before_sym:] if s["id"] in all_bodies)
         print(f"  Haskell: {len(hs_files)} files → {hs_sym} symbols, {hs_with_body} with bodies")
@@ -584,13 +1111,16 @@ def main():
             and not any(p in str(f) for p in ["target/", "/target\\", "\\target\\"])
         ]
         for f in rs_files:
-            s, e, b, c, l = parse_rust_file(f, service_name)
-            all_symbols.extend(s); all_edges.extend(e)
-            all_bodies.update(b); all_calls.update(c); all_logs.update(l)
-            for sym in s:
+            try:
+                s, e, b, c, l = parse_rust_file(f, service_name)
+                all_symbols.extend(s); all_edges.extend(e)
+                all_bodies.update(b); all_calls.update(c); all_logs.update(l)
                 ghosts = detect_ghosts(f)
                 if ghosts:
-                    ghost_map[sym["id"]].extend(ghosts)
+                    for sym in s:
+                        ghost_map[sym["id"]].extend(ghosts)
+            except Exception as exc:
+                print(f"  [error] {f}: {exc}")
         rs_sym = len(all_symbols) - before_sym
         rs_with_body = sum(1 for s in all_symbols[before_sym:] if s["id"] in all_bodies)
         print(f"  Rust:    {len(rs_files)} files → {rs_sym} symbols, {rs_with_body} with bodies")
@@ -599,14 +1129,16 @@ def main():
         # Groovy
         groovy_files = [
             f for f in service_dir.rglob("*.groovy") if f.is_file()
-        ]
-        groovy_files += [
+        ] + [
             f for f in service_dir.rglob("*.grails") if f.is_file()
         ]
         for f in groovy_files:
-            s, e, b, c, l = parse_groovy_file(f, service_name)
-            all_symbols.extend(s); all_edges.extend(e)
-            all_bodies.update(b); all_calls.update(c); all_logs.update(l)
+            try:
+                s, e, b, c, l = parse_groovy_file(f, service_name)
+                all_symbols.extend(s); all_edges.extend(e)
+                all_bodies.update(b); all_calls.update(c); all_logs.update(l)
+            except Exception as exc:
+                print(f"  [error] {f}: {exc}")
         gv_sym = len(all_symbols) - before_sym
         if gv_sym > 0:
             print(f"  Groovy:  {len(groovy_files)} files → {gv_sym} symbols")
@@ -618,13 +1150,16 @@ def main():
             and not any(p in str(f) for p in ["venv/", "__pycache__", ".venv/"])
         ]
         for f in py_files:
-            s, e, b, c, l = parse_python_file(f, service_name)
-            all_symbols.extend(s); all_edges.extend(e)
-            all_bodies.update(b); all_calls.update(c); all_logs.update(l)
-            for sym in s:
+            try:
+                s, e, b, c, l = parse_python_file(f, service_name)
+                all_symbols.extend(s); all_edges.extend(e)
+                all_bodies.update(b); all_calls.update(c); all_logs.update(l)
                 ghosts = detect_ghosts(f)
                 if ghosts:
-                    ghost_map[sym["id"]].extend(ghosts)
+                    for sym in s:
+                        ghost_map[sym["id"]].extend(ghosts)
+            except Exception as exc:
+                print(f"  [error] {f}: {exc}")
         py_sym = len(all_symbols) - before_sym
         if py_sym > 0:
             print(f"  Python:  {len(py_files)} files → {py_sym} symbols")
@@ -647,50 +1182,46 @@ def main():
 
     # Deduplicate symbols by id
     seen_ids: dict = {}
-    deduped = []
+    deduped: list = []
     for s in all_symbols:
         if s["id"] not in seen_ids:
             seen_ids[s["id"]] = True
             deduped.append(s)
 
-    # Add call_edges to edges list (for graph analysis)
+    # Add call edges to edges list (for graph analysis)
     for caller_nid, info in all_calls.items():
         for callee_name in info["callees"]:
-            all_edges.append({
-                "from": caller_nid,
-                "to":   callee_name,
-                "kind": "calls",
-            })
+            all_edges.append({"from": caller_nid, "to": callee_name, "kind": "calls"})
 
-    # ── Write outputs ──────────────────────────────────────────────────────────
+    # ── Write outputs ─────────────────────────────────────────────────────────
     result = {
         "nodes": deduped,
         "edges": all_edges,
         "stats": {
-            "total_symbols":   len(deduped),
-            "total_edges":     len(all_edges),
-            "with_body":       len(all_bodies),
-            "with_calls":      len(all_calls),
+            "total_symbols":     len(deduped),
+            "total_edges":       len(all_edges),
+            "with_body":         len(all_bodies),
+            "with_calls":        len(all_calls),
             "with_log_patterns": len(all_logs),
-            "services":        [s.name for s in services]
+            "services":          [s.name for s in services],
         }
     }
 
     raw_path = OUT_DIR / "raw_graph.json"
     raw_path.write_text(json.dumps(result, indent=2))
-    print(f"\n✓ raw_graph.json: {len(deduped)} symbols, {len(all_edges)} edges")
+    print(f"\n[ok] raw_graph.json: {len(deduped)} symbols, {len(all_edges)} edges")
 
     body_path = OUT_DIR / "body_store.json"
     body_path.write_text(json.dumps(all_bodies, indent=2))
-    print(f"✓ body_store.json: {len(all_bodies)} function bodies")
+    print(f"[ok] body_store.json: {len(all_bodies)} function bodies")
 
     call_path = OUT_DIR / "call_graph.json"
     call_path.write_text(json.dumps(all_calls, indent=2))
-    print(f"✓ call_graph.json: {len(all_calls)} entries (callees + callers)")
+    print(f"[ok] call_graph.json: {len(all_calls)} entries (callees + callers)")
 
     log_path = OUT_DIR / "log_patterns.json"
     log_path.write_text(json.dumps(all_logs, indent=2))
-    print(f"✓ log_patterns.json: {len(all_logs)} functions with log patterns")
+    print(f"[ok] log_patterns.json: {len(all_logs)} functions with log patterns")
 
     print(f"\nBody extraction rate: {len(all_bodies)/max(1,len(deduped))*100:.1f}%")
     print(f"Services: {result['stats']['services']}")

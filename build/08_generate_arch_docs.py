@@ -491,7 +491,25 @@ def main():
         print(f"[discover] Existing docs: {existing_docs}")
 
     # Phase 1: Discover domains
-    domains = discover_domains(graph_data, existing_docs, client)
+    # When SKIP_IF_EXISTS=0 (regen mode): load domains from existing meta.json
+    # files instead of calling the LLM — it returns [] when all domains exist.
+    if not SKIP_IF_EXISTS and existing_docs:
+        domains = []
+        for stem in existing_docs:
+            meta_path = GENERATED_DOCS_DIR / f"{stem}.meta.json"
+            if meta_path.exists():
+                try:
+                    m = json.loads(meta_path.read_text())
+                    domains.append({
+                        "title":         m["title"],
+                        "seed_clusters": m.get("seed_clusters", []),
+                        "seed_terms":    m.get("seed_terms", []),
+                    })
+                except Exception as e:
+                    print(f"[discover] Failed to load meta for {stem}: {e}")
+        print(f"[discover] Regen mode: loaded {len(domains)} domains from meta.json")
+    else:
+        domains = discover_domains(graph_data, existing_docs if SKIP_IF_EXISTS else [], client)
     if not domains:
         print("[main] No domains discovered — exiting")
         sys.exit(0)

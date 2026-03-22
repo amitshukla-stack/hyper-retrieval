@@ -89,7 +89,7 @@ clean_stage() {
     5) echo " Cleaning stage 5 outputs..."
        rm -f "$ARTIFACT_DIR/retrieval_package.json" ;;
     7) echo " Cleaning stage 7 outputs..."
-       rm -rf "$ARTIFACT_DIR/docs.lance" ;;
+       rm -rf "$OUTPUT_DIR/docs.lance" "$OUTPUT_DIR/doc_chunks.json" ;;
     8) echo " Cleaning stage 8 outputs..."
        rm -rf "$WORKSPACE_DIR/docs/generated" ;;
   esac

@@ -711,8 +711,32 @@ def initialize(
 # EMBEDDING  (local model OR embed server — transparent to callers)
 # ════════════════════════════════════════════════════════════════════════════
 
+def _encode_queries_batch(queries: list) -> list:
+    """Encode multiple queries in one HTTP call to embed server, or locally."""
+    if not queries:
+        return []
+    if EMBED_SERVER_URL:
+        try:
+            payload = json.dumps({"texts": queries, "instruction": EMBED_INSTRUCTION}).encode()
+            req = urllib.request.Request(
+                EMBED_SERVER_URL.rstrip("/") + "/embed",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = json.loads(urllib.request.urlopen(req, timeout=30).read())
+            return resp["embeddings"]
+        except Exception as e:
+            print(f"[embed_server] batch error: {e} — falling back to keyword search")
+            return [[] for _ in queries]
+    if embedder is not None:
+        texts = [EMBED_INSTRUCTION + q for q in queries]
+        vecs = embedder.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
+        return [v.tolist() for v in vecs]
+    return [[] for _ in queries]
+
+
 def _encode_query(query: str) -> list:
-    """Encode a single query. Calls _encode_queries_batch internally."""
+    """Encode a single query."""
     vecs = _encode_queries_batch([query])
     return vecs[0] if vecs else []
 

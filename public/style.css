@@ -1,0 +1,305 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   JUSPAY | CODE  —  Fluid Dark UI
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;1,400&display=swap');
+
+/* ── Keyframes ──────────────────────────────────────────────────────────── */
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.3; transform: scale(0.6); }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Color tokens ───────────────────────────────────────────────────────── */
+:root {
+  --jp-cyan:      #00D1FF;
+  --jp-bg:        #080808;
+  --jp-surface:   #0f0f0f;
+  --jp-surface2:  #141414;
+  --jp-border:    rgba(255,255,255,0.06);
+  --jp-border2:   rgba(255,255,255,0.10);
+  --jp-muted:     #555;
+  --jp-muted2:    #888;
+  --jp-text:      #d4d4d4;
+  --jp-radius:    10px;
+  --jp-radius-sm: 6px;
+}
+
+/* ── Hide Chainlit branding ─────────────────────────────────────────────── */
+a[href*="chainlit.io"] { display: none !important; }
+
+/* ── Welcome screen ─────────────────────────────────────────────────────── */
+#welcome-screen img,
+#welcome-screen svg { display: none !important; }
+
+#welcome-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+#welcome-screen::before {
+  content: "JUSPAY | CODE";
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0.35em;
+  color: var(--jp-cyan);
+}
+
+#welcome-screen::after {
+  content: "payment platform intelligence";
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--jp-muted);
+}
+
+/* ── Starter cards ──────────────────────────────────────────────────────── */
+.starter {
+  border-radius: var(--jp-radius-sm) !important;
+  border: 1px solid var(--jp-border) !important;
+  background: var(--jp-surface) !important;
+  transition: border-color 0.2s ease, background 0.2s ease !important;
+  font-size: 13px !important;
+}
+.starter:hover {
+  border-color: rgba(0, 209, 255, 0.35) !important;
+  background: var(--jp-surface2) !important;
+}
+
+/* ── Message thread ─────────────────────────────────────────────────────── */
+#thread,
+#messages {
+  max-width: 100% !important;
+  width: 100% !important;
+  padding-left: clamp(16px, 4vw, 64px) !important;
+  padding-right: clamp(16px, 4vw, 64px) !important;
+  box-sizing: border-box !important;
+}
+
+@media (max-width: 768px) {
+  #thread, #messages { padding-left: 12px !important; padding-right: 12px !important; }
+}
+
+/* Message fade-in */
+[class*="message"],
+[class*="Message"] {
+  animation: fade-up 0.2s ease forwards !important;
+}
+
+/* ── Markdown content ───────────────────────────────────────────────────── */
+.markdown {
+  max-width: min(100%, 860px) !important;
+  width: 100% !important;
+  line-height: 1.7 !important;
+  color: var(--jp-text) !important;
+  font-size: 14px !important;
+}
+
+@media (min-width: 1400px) { .markdown { max-width: 1000px !important; } }
+
+.markdown h1 {
+  font-size: 18px !important; font-weight: 600; color: #f0f0f0 !important;
+  margin-top: 24px; border-bottom: 1px solid var(--jp-border); padding-bottom: 6px;
+}
+.markdown h2 {
+  font-size: 16px !important; font-weight: 600; color: #e8e8e8 !important;
+  margin-top: 20px; border-bottom: 1px solid var(--jp-border); padding-bottom: 4px;
+}
+.markdown h3 {
+  font-size: 14px !important; font-weight: 600; color: #ddd !important; margin-top: 16px;
+}
+.markdown h4, .markdown h5 {
+  color: var(--jp-cyan) !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 11px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-top: 14px;
+}
+
+.markdown a { color: var(--jp-cyan) !important; text-decoration: none; }
+.markdown a:hover { text-decoration: underline; }
+
+.markdown blockquote {
+  border-left: 3px solid var(--jp-cyan) !important;
+  border-radius: 0 0 var(--jp-radius-sm) var(--jp-radius-sm) !important;
+  background: rgba(0, 209, 255, 0.04) !important;
+  padding: 10px 14px !important;
+  margin: 12px 0 !important;
+  color: var(--jp-muted2) !important;
+}
+
+/* ── Tables ─────────────────────────────────────────────────────────────── */
+.markdown table {
+  border-collapse: collapse !important;
+  width: 100%;
+  font-size: 13px;
+  margin: 12px 0;
+  border-radius: var(--jp-radius-sm);
+  overflow: hidden;
+}
+.markdown th {
+  background: rgba(0, 209, 255, 0.06) !important;
+  color: var(--jp-cyan) !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 10.5px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 7px 12px !important;
+  border: 1px solid var(--jp-border) !important;
+  font-weight: 500;
+}
+.markdown td {
+  padding: 6px 12px !important;
+  border: 1px solid var(--jp-border) !important;
+  color: var(--jp-text);
+}
+.markdown tr:nth-child(even) td {
+  background: rgba(255,255,255,0.02) !important;
+}
+
+/* ── Code ───────────────────────────────────────────────────────────────── */
+pre {
+  border-radius: var(--jp-radius-sm) !important;
+  border: 1px solid var(--jp-border) !important;
+  background: var(--jp-surface) !important;
+  padding: 14px 16px !important;
+  overflow-x: auto;
+}
+code {
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 12.5px !important;
+}
+:not(pre) > code {
+  background: rgba(255,255,255,0.07) !important;
+  border-radius: 3px !important;
+  padding: 1px 5px !important;
+  font-size: 12px !important;
+  color: #e0e0e0 !important;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   TOOL CALL STEPS — timeline style, not boxes
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.step {
+  background: transparent !important;
+  border: none !important;
+  border-left: 2px solid var(--jp-border2) !important;
+  border-radius: 0 !important;
+  margin: 0 0 0 10px !important;
+  padding: 3px 0 3px 14px !important;
+  position: relative;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 12px !important;
+  color: var(--jp-muted2) !important;
+  transition: border-color 0.2s ease;
+}
+
+/* Timeline dot */
+.step::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 9px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--jp-border2);
+  border: 1.5px solid var(--jp-bg);
+  transition: background 0.2s ease;
+}
+
+/* Running: cyan pulsing dot */
+.step.running::before,
+.step[data-status="running"]::before {
+  background: var(--jp-cyan) !important;
+  animation: dot-pulse 0.9s ease-in-out infinite;
+}
+.step.running,
+.step[data-status="running"] {
+  border-left-color: rgba(0, 209, 255, 0.35) !important;
+  color: rgba(0, 209, 255, 0.65) !important;
+}
+
+/* Done: dimmed dot */
+.step[data-status="done"]::before,
+.step.done::before {
+  background: #2a5c3a !important;
+}
+
+/* Step name */
+.step [class*="name"],
+.step [class*="step-name"],
+.step [class*="StepName"] {
+  font-size: 11.5px !important;
+  font-weight: 400 !important;
+  color: var(--jp-muted2) !important;
+}
+
+/* Step output: truncated, very muted */
+.step [class*="output"],
+.step [class*="Output"] {
+  color: var(--jp-muted) !important;
+  font-size: 11px !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 500px;
+}
+
+/* Hide raw args input — too noisy */
+.step [class*="input"],
+.step [class*="Input"] {
+  display: none !important;
+}
+
+/* Nested steps */
+.step .step { margin-left: 16px !important; }
+.step + .step { margin-top: 1px !important; }
+
+/* ── Input area ─────────────────────────────────────────────────────────── */
+#chat-input {
+  background: rgba(8, 8, 8, 0.88) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  border-top: 1px solid var(--jp-border) !important;
+  border-radius: 0 !important;
+}
+#chat-input textarea {
+  font-size: 14px !important;
+  line-height: 1.5 !important;
+}
+#chat-input button[type="submit"] {
+  border-radius: var(--jp-radius-sm) !important;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #242424; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--jp-cyan); }
+
+/* ── Always pin input to bottom — prevent layout shift ──────────────────── */
+[class]:has(> #chat-input) {
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: flex-end !important;
+}
+#welcome-screen {
+  flex: 1 1 auto !important;
+  max-height: none !important;
+}
+#chat-input {
+  position: sticky !important;
+  bottom: 0 !important;
+  z-index: 100 !important;
+}

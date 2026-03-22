@@ -13,6 +13,7 @@ Env vars:
   WORKSPACE_DIR — path to workspace root (optional)
 """
 import re, ast, json, subprocess, collections, pathlib, sys, os, textwrap
+import multiprocessing as _mp
 
 # ── Tree-sitter imports (graceful fallback if not installed) ─────────────────
 try:
@@ -1062,6 +1063,108 @@ def build_caller_index(call_store: dict) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# PER-SERVICE WORKER  (runs in a pool worker process)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _process_service_dir(service_dir: pathlib.Path) -> tuple:
+    """Process one service directory in a worker process.
+
+    Returns:
+        (service_name, symbols, edges, body_store, call_store, log_store, ghost_map_dict)
+    """
+    service_name = service_dir.name
+    symbols: list = []
+    edges:   list = []
+    body_store: dict = {}
+    call_store: dict = {}
+    log_store:  dict = {}
+    ghost_map: dict = collections.defaultdict(list)
+
+    before = 0
+
+    # ── Haskell ─────────────────────────────────────────────────────────────
+    hs_files = [
+        f for f in service_dir.rglob("*.hs") if f.is_file()
+        and not any(p in f.parts for p in ["dist", "dist-newstyle", ".stack-work", ".juspay"])
+    ]
+    for f in hs_files:
+        try:
+            s, e, b, c, l = parse_haskell_file(f)
+            symbols.extend(s); edges.extend(e)
+            body_store.update(b); call_store.update(c); log_store.update(l)
+            ghosts = detect_ghosts(f)
+            if ghosts:
+                for sym in s:
+                    ghost_map[sym["id"]].extend(ghosts)
+        except Exception as exc:
+            print(f"  [error] {f}: {exc}", flush=True)
+    hs_sym = len(symbols) - before
+    hs_with_body = sum(1 for s in symbols[before:] if s["id"] in body_store)
+    print(f"  {service_name} Haskell: {len(hs_files)} files → {hs_sym} symbols, {hs_with_body} with bodies", flush=True)
+    before = len(symbols)
+
+    # ── Rust ─────────────────────────────────────────────────────────────────
+    rs_files = [
+        f for f in service_dir.rglob("*.rs") if f.is_file()
+        and not any(p in str(f) for p in ["target/", "/target\\", "\\target\\"])
+    ]
+    for f in rs_files:
+        try:
+            s, e, b, c, l = parse_rust_file(f, service_name)
+            symbols.extend(s); edges.extend(e)
+            body_store.update(b); call_store.update(c); log_store.update(l)
+            ghosts = detect_ghosts(f)
+            if ghosts:
+                for sym in s:
+                    ghost_map[sym["id"]].extend(ghosts)
+        except Exception as exc:
+            print(f"  [error] {f}: {exc}", flush=True)
+    rs_sym = len(symbols) - before
+    rs_with_body = sum(1 for s in symbols[before:] if s["id"] in body_store)
+    print(f"  {service_name} Rust: {len(rs_files)} files → {rs_sym} symbols, {rs_with_body} with bodies", flush=True)
+    before = len(symbols)
+
+    # ── Groovy ───────────────────────────────────────────────────────────────
+    groovy_files = (
+        [f for f in service_dir.rglob("*.groovy") if f.is_file()]
+        + [f for f in service_dir.rglob("*.grails") if f.is_file()]
+    )
+    for f in groovy_files:
+        try:
+            s, e, b, c, l = parse_groovy_file(f, service_name)
+            symbols.extend(s); edges.extend(e)
+            body_store.update(b); call_store.update(c); log_store.update(l)
+        except Exception as exc:
+            print(f"  [error] {f}: {exc}", flush=True)
+    gv_sym = len(symbols) - before
+    if gv_sym > 0:
+        print(f"  {service_name} Groovy: {len(groovy_files)} files → {gv_sym} symbols", flush=True)
+    before = len(symbols)
+
+    # ── Python ───────────────────────────────────────────────────────────────
+    py_files = [
+        f for f in service_dir.rglob("*.py") if f.is_file()
+        and not any(p in str(f) for p in ["venv/", "__pycache__", ".venv/"])
+    ]
+    for f in py_files:
+        try:
+            s, e, b, c, l = parse_python_file(f, service_name)
+            symbols.extend(s); edges.extend(e)
+            body_store.update(b); call_store.update(c); log_store.update(l)
+            ghosts = detect_ghosts(f)
+            if ghosts:
+                for sym in s:
+                    ghost_map[sym["id"]].extend(ghosts)
+        except Exception as exc:
+            print(f"  [error] {f}: {exc}", flush=True)
+    py_sym = len(symbols) - before
+    if py_sym > 0:
+        print(f"  {service_name} Python: {len(py_files)} files → {py_sym} symbols", flush=True)
+
+    return (service_name, symbols, edges, body_store, call_store, log_store, dict(ghost_map))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1073,96 +1176,28 @@ def main():
     all_logs:    dict = {}
     ghost_map: dict = collections.defaultdict(list)
 
-    services = [p for p in REPO_ROOT.iterdir() if p.is_dir() and not p.name.startswith(".")]
+    services = sorted(p for p in REPO_ROOT.iterdir() if p.is_dir() and not p.name.startswith("."))
     print(f"Found {len(services)} service directories: {[s.name for s in services]}")
     if _SERVICE_PROFILES:
         print(f"Loaded service profiles for: {list(_SERVICE_PROFILES.keys())}")
 
-    for service_dir in sorted(services):
-        service_name = service_dir.name
-        print(f"\nProcessing: {service_name}")
+    # ── Parallel extraction across services ──────────────────────────────────
+    n_workers = min(len(services), os.cpu_count() or 1)
+    print(f"\nProcessing {len(services)} services with {n_workers} parallel workers...")
 
-        before_sym = len(all_symbols)
+    with _mp.Pool(processes=n_workers) as pool:
+        results = pool.map(_process_service_dir, services)
 
-        # Haskell
-        hs_files = [
-            f for f in service_dir.rglob("*.hs") if f.is_file()
-            and not any(p in f.parts for p in ["dist", "dist-newstyle", ".stack-work", ".juspay"])
-        ]
-        for f in hs_files:
-            try:
-                s, e, b, c, l = parse_haskell_file(f)
-                all_symbols.extend(s); all_edges.extend(e)
-                all_bodies.update(b); all_calls.update(c); all_logs.update(l)
-                ghosts = detect_ghosts(f)
-                if ghosts:
-                    for sym in s:
-                        ghost_map[sym["id"]].extend(ghosts)
-            except Exception as exc:
-                print(f"  [error] {f}: {exc}")
-        hs_sym = len(all_symbols) - before_sym
-        hs_with_body = sum(1 for s in all_symbols[before_sym:] if s["id"] in all_bodies)
-        print(f"  Haskell: {len(hs_files)} files → {hs_sym} symbols, {hs_with_body} with bodies")
-        before_sym = len(all_symbols)
-
-        # Rust
-        rs_files = [
-            f for f in service_dir.rglob("*.rs") if f.is_file()
-            and not any(p in str(f) for p in ["target/", "/target\\", "\\target\\"])
-        ]
-        for f in rs_files:
-            try:
-                s, e, b, c, l = parse_rust_file(f, service_name)
-                all_symbols.extend(s); all_edges.extend(e)
-                all_bodies.update(b); all_calls.update(c); all_logs.update(l)
-                ghosts = detect_ghosts(f)
-                if ghosts:
-                    for sym in s:
-                        ghost_map[sym["id"]].extend(ghosts)
-            except Exception as exc:
-                print(f"  [error] {f}: {exc}")
-        rs_sym = len(all_symbols) - before_sym
-        rs_with_body = sum(1 for s in all_symbols[before_sym:] if s["id"] in all_bodies)
-        print(f"  Rust:    {len(rs_files)} files → {rs_sym} symbols, {rs_with_body} with bodies")
-        before_sym = len(all_symbols)
-
-        # Groovy
-        groovy_files = [
-            f for f in service_dir.rglob("*.groovy") if f.is_file()
-        ] + [
-            f for f in service_dir.rglob("*.grails") if f.is_file()
-        ]
-        for f in groovy_files:
-            try:
-                s, e, b, c, l = parse_groovy_file(f, service_name)
-                all_symbols.extend(s); all_edges.extend(e)
-                all_bodies.update(b); all_calls.update(c); all_logs.update(l)
-            except Exception as exc:
-                print(f"  [error] {f}: {exc}")
-        gv_sym = len(all_symbols) - before_sym
-        if gv_sym > 0:
-            print(f"  Groovy:  {len(groovy_files)} files → {gv_sym} symbols")
-        before_sym = len(all_symbols)
-
-        # Python
-        py_files = [
-            f for f in service_dir.rglob("*.py") if f.is_file()
-            and not any(p in str(f) for p in ["venv/", "__pycache__", ".venv/"])
-        ]
-        for f in py_files:
-            try:
-                s, e, b, c, l = parse_python_file(f, service_name)
-                all_symbols.extend(s); all_edges.extend(e)
-                all_bodies.update(b); all_calls.update(c); all_logs.update(l)
-                ghosts = detect_ghosts(f)
-                if ghosts:
-                    for sym in s:
-                        ghost_map[sym["id"]].extend(ghosts)
-            except Exception as exc:
-                print(f"  [error] {f}: {exc}")
-        py_sym = len(all_symbols) - before_sym
-        if py_sym > 0:
-            print(f"  Python:  {len(py_files)} files → {py_sym} symbols")
+    # ── Merge results from all workers ───────────────────────────────────────
+    for svc_name, syms, edges, bodies, calls, logs, ghosts in results:
+        print(f"  Merged {svc_name}: {len(syms)} symbols, {len(bodies)} bodies")
+        all_symbols.extend(syms)
+        all_edges.extend(edges)
+        all_bodies.update(bodies)
+        all_calls.update(calls)
+        all_logs.update(logs)
+        for nid, g in ghosts.items():
+            ghost_map[nid].extend(g)
 
     # Attach ghost deps
     for sym in all_symbols:

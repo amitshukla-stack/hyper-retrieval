@@ -6,6 +6,35 @@ The **Chat UI** and **MCP server** are two reference implementations on top of t
 
 ---
 
+## Contents
+
+**Understanding the platform**
+- [What it does](#what-it-does)
+- [What data it works best on](#what-data-it-works-best-on)
+- [Language support](#language-support)
+- [Folder structure](#folder-structure)
+
+**Design**
+- [Applications you can build](#applications-you-can-build)
+- [Building a ReAct agent](#building-a-react-agent)
+- [Adding tools](#adding-tools)
+- [Adding a language parser](#adding-a-language-parser)
+
+**Setup**
+- [Setup from scratch](#setup-from-scratch)
+- [Embedding providers](#embedding-providers)
+- [Connecting AI agents via MCP](#connecting-ai-agents-via-mcp)
+- [PR blast-radius analysis](#pr-blast-radius-analysis)
+- [Config reference](#config-reference)
+
+**Reference**
+- [Best practices](#best-practices)
+- [Design decisions and learnings](#design-decisions-and-learnings)
+- [Architecture deep-dive](#architecture-deep-dive)
+- [Troubleshooting](#troubleshooting)
+
+---
+
 ## What it does
 
 Indexes your codebase into five complementary data structures:

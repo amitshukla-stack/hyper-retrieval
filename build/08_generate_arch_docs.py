@@ -247,9 +247,9 @@ def generate_doc(domain: dict, graph_data: dict, body_store: dict, client) -> st
     for n in matching_nodes[:20]:
         lang = n.get("lang", "?")
         kind = n.get("kind", "?")
-        name = n.get("name", "?")
+        nid  = n.get("id", n.get("name", "?"))   # fully-qualified ID for body_store lookup
         typ  = n.get("type", "")
-        line = f"  [{lang}/{kind}] {name}"
+        line = f"  [{lang}/{kind}] {nid}"
         if typ:
             line += f" :: {typ[:120]}"
         sig_lines.append(line)
@@ -281,10 +281,10 @@ def generate_doc(domain: dict, graph_data: dict, body_store: dict, client) -> st
         "Style: Use H2 headings, tables mapping business concepts to code, "
         "code references using backticks, call chains using indented arrows (└─▶).\n\n"
         f"Relevant cluster summaries:\n{cluster_summaries_text}\n"
-        f"Key functions and signatures:\n{function_signatures}\n\n"
+        f"Key functions and signatures (use these EXACT fully-qualified IDs in backticks when referencing code):\n{function_signatures}\n\n"
         f"Entry point implementations:\n{bodies_text}\n\n"
         "Write the complete markdown document. "
-        "Reference actual function names and module paths you see above. "
+        "When referencing code, use the exact fully-qualified IDs shown above (e.g. `Euler.API.Txns.Flow.handleTxn`). "
         "Be specific and accurate — only claim things you can verify from the code above."
     )
 

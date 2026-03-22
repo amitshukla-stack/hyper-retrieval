@@ -15,9 +15,9 @@ import json, os, pathlib, re, time, threading, urllib.request, urllib.error
 from collections import defaultdict
 
 # ── LLM config (from env or config.yaml) ─────────────────────────────────────
-LLM_API_KEY  = os.environ.get("KIMI_API_KEY",  "REDACTED")
-LLM_BASE_URL = os.environ.get("KIMI_BASE_URL", "https://grid.ai.juspay.net")
-LLM_MODEL    = os.environ.get("KIMI_MODEL",    "kimi-latest")
+LLM_API_KEY  = os.environ.get("LLM_API_KEY",  "")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "")
+LLM_MODEL    = os.environ.get("LLM_MODEL",    "reasoning-large-model")
 MAX_TOOL_CALLS = 12
 
 # ── Embed server URL (set to delegate GPU model to embed_server.py) ───────────
@@ -58,7 +58,7 @@ doc_chunks:   list = []
 doc_by_id:    dict = {}
 gw_integrity: dict = {}
 
-# ── Config (defaults match Juspay deployment; override via load_config()) ─────
+# ── Config (override via load_config() or env vars) ─────────────────────────
 KNOWN_SERVICES: list = [
     "euler-api-gateway", "euler-api-txns", "UCS", "euler-db",
     "euler-api-order", "graphh", "euler-api-pre-txn",
@@ -93,7 +93,7 @@ _TEST_PATH_SEGMENTS: frozenset = frozenset({
     "scenario", "scenarios", "fixture", "fixtures", "ucs-connector-tests",
     "examples", "example",
     # UCS Hyperswitch connector-integration is Rust scaffolding not used in production
-    # payment flows at Juspay — deprioritise so Haskell gateway code surfaces first
+    # payment-related test files — deprioritise so core business logic surfaces first
     "connector-integration",
 })
 
@@ -383,12 +383,11 @@ AGENT_TOOLS = [
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# PERSONA PROMPT & FRAMEWORK — single identity: Juspay-code
-# (override via config.yaml for non-Juspay deployments)
+# PERSONA PROMPT & FRAMEWORK — default identity (override via config.yaml personas section)
 # ════════════════════════════════════════════════════════════════════════════
 
-_JUSPAY_CODE_SYSTEM_PROMPT = """
-You are Juspay-code — an interactive AI assistant embedded in Juspay's payment platform codebase. You help engineers understand, trace, debug, and reason about code across 12 services using a set of retrieval tools.
+_DEFAULT_SYSTEM_PROMPT = """
+You are Codebase Expert — an interactive AI assistant embedded in your organisation's codebase. You help engineers understand, trace, debug, and reason about code across services using a set of retrieval tools.
 
 ## Service architecture (authoritative — never invent or deviate)
 
@@ -439,7 +438,7 @@ You have tools to fetch source code, trace call chains, and search symbols. Use 
 **Impact of a change:** Read the function being changed. `trace_callers` to find direct callers. Note which callers are payment-blocking vs. degraded-only.
 **Ambiguous query:** If the user's query could refer to two different code paths (e.g. split payment vs. split settlement), ask one focused clarifying question before calling any tools.
 
-## The Juspay way
+## Engineering principles
 
 - Strong type safety: business invariants enforced at the type level, not at runtime
 - Explicit error handling: no silent failures, no partial successes treated as success
@@ -461,7 +460,7 @@ flowchart LR
 
 Rules: `flowchart LR` for flows · `flowchart TD` for hierarchies · node labels as ServiceName<br/>functionName · edge labels as condition/data type · max 15 nodes · only nodes you can name from evidence.""".strip()
 
-_JUSPAY_CODE_FRAMEWORK = (
+_DEFAULT_FRAMEWORK = (
     "Use markdown throughout — the UI renders it. "
     "All function names, types, and module paths in backticks. "
     "All file paths in backticks. "
@@ -498,17 +497,17 @@ _JUSPAY_CODE_FRAMEWORK = (
 
 # Single-entry dicts — all keys point to the one Juspay-code identity
 PERSONA_SYSTEM_PROMPTS: dict = {
-    "juspay_code": _JUSPAY_CODE_SYSTEM_PROMPT,
+    "default": _DEFAULT_SYSTEM_PROMPT,
 }
 PERSONA_FRAMEWORKS: dict = {
-    "juspay_code": _JUSPAY_CODE_FRAMEWORK,
+    "juspay_code": _DEFAULT_FRAMEWORK,
 }
 PERSONA_LABELS: dict = {
-    "juspay_code": "Juspay-code",
+    "default": "Codebase Expert",
 }
 
 # Keep _BASE_IDENTITY as an alias for backward compatibility with any external callers
-_BASE_IDENTITY = _JUSPAY_CODE_SYSTEM_PROMPT
+_BASE_IDENTITY = _DEFAULT_SYSTEM_PROMPT
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -527,7 +526,7 @@ def initialize(
                    Defaults to the directory next to this file.
     load_embedder: False skips the ~6GB Qwen3 model → keyword-only search.
                    Ignored when EMBED_SERVER_URL is set (model runs as separate service).
-    config_path:   optional path to config.yaml for non-Juspay deployments.
+    config_path:   optional path to config.yaml.
     """
     global embedder, _llm_client, G, MG, lance_tbl, cluster_summaries
     global body_store, call_graph, log_patterns, doc_chunks, doc_by_id, gw_integrity
@@ -1380,7 +1379,7 @@ def tool_get_context(query: str) -> str:
         list(set(list(vec_by_svc) + list(kw_by_svc)))
     )
     doc_hits = doc_vector_search(query, k=3) if doc_lance_tbl is not None else []
-    return _build_base_context(vec_by_svc, kw_by_svc, cluster_by_svc, "juspay_code", doc_hits)
+    return _build_base_context(vec_by_svc, kw_by_svc, cluster_by_svc, "default", doc_hits)
 
 
 TOOL_DISPATCH: dict = {

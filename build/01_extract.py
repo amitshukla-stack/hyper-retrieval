@@ -7,15 +7,15 @@ Output:  $OUTPUT_DIR/raw_graph.json
          $OUTPUT_DIR/log_patterns.json    (fn_id → [log patterns])
 
 Env vars:
-  REPO_ROOT   — path to workspace source/ dir (default: workspaces/juspay/source)
-  OUTPUT_DIR  — path to workspace output/ dir (default: workspaces/juspay/output)
+  REPO_ROOT   — path to workspace source/ dir (set via REPO_ROOT env var)
+  OUTPUT_DIR  — path to workspace output/ dir (set via OUTPUT_DIR env var)
 """
 import re, ast, json, subprocess, collections, pathlib, sys, os, textwrap
 
 REPO_ROOT = pathlib.Path(os.environ.get("REPO_ROOT",
-    "/home/beast/projects/workspaces/juspay/source"))
+    "workspaces/source"))
 OUT_DIR   = pathlib.Path(os.environ.get("OUTPUT_DIR",
-    "/home/beast/projects/workspaces/juspay/output"))
+    "workspaces/output"))
 OUT_DIR.mkdir(exist_ok=True, parents=True)
 
 MAX_BODY_CHARS = 8000   # truncate very long bodies to keep memory sane
@@ -26,7 +26,7 @@ MAX_BODY_LINES = 200    # ~5 screens of code
 # HASKELL PARSER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Log patterns used in Juspay Haskell codebase
+# Log patterns for structured logging in Haskell codebases
 _HS_LOG_RE = re.compile(
     r'(?:logInfo|logError|logWarn|logDebug|Logger\.log|L\.log|runIO\s+\$\s+log)\s*'
     r'(?:\'[A-Z\w]+\')?\s*'

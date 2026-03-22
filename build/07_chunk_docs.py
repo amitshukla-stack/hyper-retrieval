@@ -3,7 +3,7 @@ Stage 7 — Chunk euler-docs and euler-documentation markdown into a searchable
 documentation collection.
 
 Input:   euler-docs/*.md, euler-documentation/*.md
-         pipeline/output/juspay_docs.json  (if exists — Juspay public API docs)
+         pipeline/output/public_docs.json  (if exists — optional public API docs)
 Output:  pipeline/output/doc_chunks.json   (raw chunks with metadata)
          pipeline/output/docs.lance        (embedded chunks, LanceDB collection)
 
@@ -22,7 +22,7 @@ DOCS_DIRS  = [
     pathlib.Path(__file__).parent.parent / "euler-docs",
     pathlib.Path(__file__).parent.parent / "euler-documentation",
 ]
-JUSPAY_DOCS_JSON = OUT_DIR / "juspay_docs.json"
+PUBLIC_DOCS_JSON = OUT_DIR / "public_docs.json"
 OUT_CHUNKS = OUT_DIR / "doc_chunks.json"
 OUT_LANCE  = OUT_DIR / "docs.lance"
 BATCH_SIZE = 32
@@ -124,14 +124,14 @@ def chunk_markdown(path: pathlib.Path, source_label: str) -> list[dict]:
     return chunks
 
 
-# ── Juspay public docs chunker ────────────────────────────────────────────────
+# ── Public docs chunker ──────────────────────────────────────────────────────
 
-def load_juspay_docs() -> list[dict]:
-    if not JUSPAY_DOCS_JSON.exists():
-        print(f"  [juspay_docs] Not found: {JUSPAY_DOCS_JSON} — skipping")
+def load_public_docs() -> list[dict]:
+    if not PUBLIC_DOCS_JSON.exists():
+        print(f"  [public_docs] Not found: {PUBLIC_DOCS_JSON} — skipping")
         return []
 
-    data = json.loads(JUSPAY_DOCS_JSON.read_text())
+    data = json.loads(PUBLIC_DOCS_JSON.read_text())
     chunks = []
     for page in data.get("pages", []):
         url     = page["url"]
@@ -143,8 +143,8 @@ def load_juspay_docs() -> list[dict]:
         if len(md) <= MAX_CHUNK_CHARS:
             slug = re.sub(r'[^a-z0-9]+', '_', title.lower())[:40]
             chunks.append({
-                "id":            f"juspay_public::{slug}",
-                "source_file":   "juspay_public_docs",
+                "id":            f"public_docs::{slug}",
+                "source_file":   "public_docs",
                 "section_title": title,
                 "heading_level": 1,
                 "text":          md,
@@ -162,8 +162,8 @@ def load_juspay_docs() -> list[dict]:
                 sub_title = hm.group(2).strip() if hm else f"{title} ({i})"
                 slug = re.sub(r'[^a-z0-9]+', '_', sub_title.lower())[:40]
                 chunks.append({
-                    "id":            f"juspay_public::{slug}_{i}",
-                    "source_file":   "juspay_public_docs",
+                    "id":            f"public_docs::{slug}_{i}",
+                    "source_file":   "public_docs",
                     "section_title": sub_title,
                     "heading_level": len(hm.group(1)) if hm else 2,
                     "text":          sub[:MAX_CHUNK_CHARS],
@@ -172,7 +172,7 @@ def load_juspay_docs() -> list[dict]:
                     "url":           url,
                 })
 
-    print(f"  [juspay_docs] {len(data.get('pages',[]))} pages → {len(chunks)} chunks")
+    print(f"  [public_docs] {len(data.get('pages',[]))} pages → {len(chunks)} chunks")
     return chunks
 
 
@@ -246,9 +246,9 @@ def main():
             print(f"  {f.name}: {len(chunks)} chunks")
             all_chunks.extend(chunks)
 
-    # 2. Juspay public docs (if crawled)
-    print("\nJuspay public docs:")
-    all_chunks.extend(load_juspay_docs())
+    # 2. Public docs (if available)
+    print("\nPublic docs:")
+    all_chunks.extend(load_public_docs())
 
     # Deduplicate by id
     seen = set()

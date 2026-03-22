@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pr_analyzer.py — PR blast-radius analysis for the Juspay codebase
+pr_analyzer.py — PR blast-radius analysis for your codebase
 
 Usage:
   # Pipe git diff output (most common in CI)
@@ -9,7 +9,7 @@ Usage:
   # Explicit files
   python3 pr_analyzer.py --files euler-api-gateway/src/Euler/API/Gateway/Routes.hs
 
-  # With LLM explanation (~30s, needs KIMI_API_KEY)
+  # With LLM explanation (~30s, needs LLM_API_KEY)
   git diff main...HEAD --name-only | python3 pr_analyzer.py --explain --persona reliability_engineer
 
   # JSON output for CI pipelines

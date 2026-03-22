@@ -1,5 +1,5 @@
 """
-Stage 4 - Summarize each cluster via Kimi (cloud, LiteLLM endpoint).
+Stage 4 - Summarize each cluster via an LLM (any OpenAI-compatible endpoint).
 
 Safeguards:
   - Exponential backoff on rate limits (429) up to 5 retries
@@ -20,9 +20,9 @@ OUT_DIR      = pathlib.Path(__file__).parent / "output"
 ARTIFACT_DIR = pathlib.Path(__file__).parent / "demo_artifact"
 ARTIFACT_DIR.mkdir(exist_ok=True)
 
-API_KEY  = os.environ.get("KIMI_API_KEY",  "REDACTED")
-BASE_URL = os.environ.get("KIMI_BASE_URL", "https://grid.ai.juspay.net")
-MODEL    = os.environ.get("KIMI_MODEL",    "kimi-latest")
+API_KEY  = os.environ.get("LLM_API_KEY",  "")
+BASE_URL = os.environ.get("LLM_BASE_URL", "")
+MODEL    = os.environ.get("LLM_MODEL",    "reasoning-large-model")
 
 MAX_NODES_PER_CLUSTER = int(os.environ.get("MAX_NODES_PER_CLUSTER", "80"))
 MIN_CLUSTER_SIZE      = int(os.environ.get("MIN_CLUSTER_SIZE", "100"))

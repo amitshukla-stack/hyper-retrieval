@@ -1,5 +1,5 @@
 """
-Juspay-code — Agentic codebase intelligence (Chainlit UI)
+HyperRetrieval — Agentic codebase intelligence (Chainlit UI)
 
 Clean ReAct architecture:
   - Single system prompt (no routing, no persona selection)
@@ -21,9 +21,9 @@ ARTIFACT_DIR   = pathlib.Path(os.environ.get(
     "ARTIFACT_DIR",
     str(_HERE / "demo_artifact" if (_HERE / "demo_artifact").exists() else _HERE)
 ))
-LLM_API_KEY    = os.environ.get("KIMI_API_KEY",  "REDACTED")
-LLM_BASE_URL   = os.environ.get("KIMI_BASE_URL", "https://grid.ai.juspay.net")
-LLM_MODEL      = os.environ.get("KIMI_MODEL",    "kimi-latest")
+LLM_API_KEY    = os.environ.get("LLM_API_KEY",  "")
+LLM_BASE_URL   = os.environ.get("LLM_BASE_URL", "")
+LLM_MODEL      = os.environ.get("LLM_MODEL",    "reasoning-large-model")
 MAX_HISTORY    = 6
 MAX_TOOL_CALLS = 12
 RETRIEVAL_LOG  = pathlib.Path("/tmp/retrieval_log.jsonl")
@@ -38,7 +38,7 @@ _load_all_done   = False
 # ════════════════════════════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """\
-You are Juspay-code, an expert AI assistant with deep knowledge of Juspay's \
+You are Codebase Expert, an expert AI assistant with deep knowledge of your organisation's \
 payment platform codebase. You help engineers understand, debug, and extend \
 the system by reading actual source code — not guessing.
 
@@ -165,8 +165,8 @@ def _step_name(fn_name: str, args: dict) -> str:
 async def set_chat_profiles():
     return [
         cl.ChatProfile(
-            name="Juspay-code",
-            markdown_description="Payment platform intelligence — ask anything about the Juspay codebase.",
+            name="HyperRetrieval",
+            markdown_description="Codebase intelligence — ask anything about your codebase.",
             starters=[
                 cl.Starter(label="Card payment flow end-to-end",
                            message="Walk me through the complete card payment flow from order creation to gateway response."),
@@ -190,7 +190,7 @@ async def on_start():
     await asyncio.to_thread(load_all)
     cl.user_session.set("history", [])
     await cl.Message(
-        content="**Juspay-code** ready. Ask anything about Juspay's payment platform, or type `/status` for system stats."
+        content="**HyperRetrieval** ready. Ask anything about your codebase, or type `/status` for system stats."
     ).send()
 
 
@@ -201,7 +201,7 @@ async def on_message(message: cl.Message):
     # /status command
     if query.lower().startswith("/status"):
         lines = [
-            "**Juspay-code Status**",
+            "**HyperRetrieval Status**",
             f"- Graph: {RE.G.number_of_nodes():,} nodes, {RE.G.number_of_edges():,} edges",
             f"- Vectors: {len(RE.lance_tbl):,} @ 4096d",
             f"- Module graph: {RE.MG.number_of_nodes():,} modules, {RE.MG.number_of_edges():,} edges",

@@ -1,5 +1,5 @@
 """
-mcp_server.py — Juspay-code MCP server
+mcp_server.py — HyperRetrieval MCP server
 
 Exposes codebase intelligence as 8 MCP tools.
 
@@ -49,7 +49,7 @@ _args, _ = _parser.parse_known_args()
 
 MCP_PORT = _args.port
 mcp = FastMCP(
-    "juspay-code",
+    "hyperretrieval",
     host="127.0.0.1",
     port=MCP_PORT,
     sse_path="/sse",
@@ -310,7 +310,7 @@ def get_blast_radius(files_or_modules: list[str], max_hops: int = 2) -> str:
 @mcp.tool()
 def get_context(
     query: str,
-    persona: str = "juspay_code",
+    persona: str = "default",
     services: list[str] | None = None,
     max_symbols: int = 0,
 ) -> str:
@@ -337,7 +337,7 @@ def get_context(
 
     Args:
         query:       Your question or topic (natural language)
-        persona:     Leave as default — only "juspay_code" is supported
+        persona:     Leave as default — only "default" is supported
         services:    Limit to specific services — cuts tokens by 50-80%
                      e.g. ["euler-api-gateway", "euler-api-txns"]
         max_symbols: Cap symbols per service (0 = no cap). Use 20-30 for large queries.

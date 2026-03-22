@@ -21,7 +21,7 @@ Run:
     python3 tests/test_06_auto_eval.py --refresh           # regenerate all cases
     python3 tests/test_06_auto_eval.py --samples 10        # N per service (default 5)
     python3 tests/test_06_auto_eval.py --cross-service 15  # cross-service cases (default 10)
-    OPENAI_API_KEY=sk-... python3 tests/test_06_auto_eval.py   # use OpenAI instead of Kimi
+    LLM_API_KEY=sk-... LLM_BASE_URL=https://api.openai.com/v1 python3 tests/test_06_auto_eval.py
 """
 
 import sys, json, pathlib, random, os, re, argparse, time, textwrap
@@ -57,7 +57,7 @@ GENERATED.mkdir(parents=True, exist_ok=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LLM client (Kimi by default; OpenAI-compatible)
+# LLM client (any OpenAI-compatible endpoint)
 # ══════════════════════════════════════════════════════════════════════════════
 def _make_llm_client():
     """Return an OpenAI-compatible client. Prefers env vars over hardcoded defaults."""
@@ -70,9 +70,9 @@ def _make_llm_client():
     if os.environ.get("OPENAI_API_KEY"):
         return OpenAI(api_key=os.environ["OPENAI_API_KEY"]), "gpt-4o-mini"
 
-    api_key  = os.environ.get("KIMI_API_KEY",  "REDACTED")
-    base_url = os.environ.get("KIMI_BASE_URL", "https://grid.ai.juspay.net")
-    model    = os.environ.get("KIMI_MODEL",    "kimi-latest")
+    api_key  = os.environ.get("LLM_API_KEY",  "")
+    base_url = os.environ.get("LLM_BASE_URL", "")
+    model    = os.environ.get("LLM_MODEL",    "reasoning-large-model")
     return OpenAI(api_key=api_key, base_url=base_url), model
 
 

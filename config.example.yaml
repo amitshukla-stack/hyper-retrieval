@@ -7,11 +7,11 @@
 
 # ── LLM (any OpenAI-compatible API) ──────────────────────────────────────────
 llm:
-  api_key:  "${KIMI_API_KEY}"         # env var reference or literal key
-  base_url: "https://grid.ai.juspay.net"
+  api_key:  "${LLM_API_KEY}"         # env var reference or literal key
+  base_url: "${LLM_BASE_URL}"
   model:    "${LLM_MODEL}"          # any OpenAI-compatible model
 
-  # Tested with: kimi-latest (via grid.ai.juspay.net), any OpenAI-compatible endpoint
+  # Tested with: reasoning-large-model, any OpenAI-compatible endpoint
   # Use the most capable model you have access to — answer quality scales with LLM quality.
   # Example:
   # base_url: "https://api.openai.com/v1"
@@ -57,7 +57,7 @@ embed:
 
 # ── Artifact directory ────────────────────────────────────────────────────────
 # Where to find: graph_with_summaries.json, vectors.lance, output/
-artifact_dir: "/home/beast/projects/workspaces/juspay/artifacts"
+artifact_dir: "/path/to/your/workspace/artifacts"
 
 # ── Services (list all microservices in your codebase) ───────────────────────
 services:
@@ -88,7 +88,7 @@ kw_allowlist:
   - nfc
   - qr
 
-# ── Persona overrides (optional — defaults work for Juspay) ──────────────────
+# ── Persona overrides (optional) ────────────────────────────────────────────
 # Uncomment and edit to customize for your codebase:
 #
 # personas:

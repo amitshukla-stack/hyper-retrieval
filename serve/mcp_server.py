@@ -39,6 +39,7 @@ import argparse, os, pathlib, socket, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 import retrieval_engine as RE
+import tools as T
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -125,7 +126,7 @@ def search_symbols(query: str, service: str = "", brief: bool = False) -> str:
         service: Optional — restrict to one service (e.g. "euler-api-gateway", "UCS")
         brief:   True = name+file only (~50 tokens/result). False = full signature (default)
     """
-    return RE.tool_search_symbols(query, service, brief)
+    return T.tool_search_symbols(query, service, brief)
 
 
 @mcp.tool()
@@ -150,7 +151,7 @@ def search_modules(query: str, service: str = "") -> str:
         query:   Keywords to search in module paths
         service: Optional — restrict to one service
     """
-    return RE.tool_search_modules(query, service)
+    return T.tool_search_modules(query, service)
 
 
 @mcp.tool()
@@ -178,7 +179,7 @@ def get_module(module_name: str, service: str = "", max_symbols: int = 30) -> st
         service:     Optional — restrict to one service to avoid ambiguity
         max_symbols: Max symbols to return per module (default: 30)
     """
-    return RE.tool_get_module(module_name, service, max_symbols)
+    return T.tool_get_module(module_name, service, max_symbols)
 
 
 @mcp.tool()
@@ -200,7 +201,7 @@ def get_function_body(fn_id: str, reason: str = "") -> str:
         fn_id:  Fully-qualified function ID from search results
         reason: Why you're reading this (optional — helps trace investigation)
     """
-    return RE.tool_get_function_body(fn_id, reason)
+    return T.tool_get_function_body(fn_id, reason)
 
 
 @mcp.tool()
@@ -220,7 +221,7 @@ def trace_callers(fn_id: str, reason: str = "") -> str:
         fn_id:  Function ID to find callers for
         reason: Why you're tracing (optional)
     """
-    return RE.tool_trace_callers(fn_id, reason)
+    return T.tool_trace_callers(fn_id, reason)
 
 
 @mcp.tool()
@@ -240,7 +241,7 @@ def trace_callees(fn_id: str, reason: str = "") -> str:
         fn_id:  Function ID to get callees for
         reason: Why you're tracing (optional)
     """
-    return RE.tool_trace_callees(fn_id, reason)
+    return T.tool_trace_callees(fn_id, reason)
 
 
 @mcp.tool()
@@ -362,7 +363,7 @@ def get_context(
     if RE.can_embed():
         qvec     = RE._encode_query(query)
         doc_hits = RE.doc_vector_search(qvec, top_k=20)
-    return RE._build_base_context(vec_by_svc, kw_by_svc, cluster_by_svc, persona, doc_hits)
+    return T._build_base_context(vec_by_svc, kw_by_svc, cluster_by_svc, persona, doc_hits)
 
 
 # ════════════════════════════════════════════════════════════════════════════

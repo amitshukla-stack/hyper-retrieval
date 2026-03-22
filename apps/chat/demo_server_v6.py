@@ -13,7 +13,9 @@ import asyncio, json, os, pathlib, sys, time
 import chainlit as cl
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import retrieval_engine as RE
+import tools as T
 
 # ── Config ────────────────────────────────────────────────────────────────────
 _HERE          = pathlib.Path(__file__).resolve().parent
@@ -234,7 +236,7 @@ async def on_message(message: cl.Message):
                 llm_client.chat.completions.create,
                 model=LLM_MODEL,
                 messages=messages,
-                tools=RE.AGENT_TOOLS,
+                tools=T.AGENT_TOOLS,
                 tool_choice="auto",
                 temperature=0.15,
                 max_tokens=4000,
@@ -269,7 +271,7 @@ async def on_message(message: cl.Message):
 
                 async with cl.Step(name=_step_name(fn_name, args), type="tool",
                                    show_input=False) as step:
-                    dispatcher = RE.TOOL_DISPATCH.get(fn_name)
+                    dispatcher = T.TOOL_DISPATCH.get(fn_name)
                     result = await asyncio.to_thread(dispatcher, args) if dispatcher \
                              else f"Unknown tool: {fn_name}"
                     lines = [l.strip() for l in result.splitlines()

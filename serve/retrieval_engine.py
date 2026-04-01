@@ -796,6 +796,89 @@ def get_blast_radius(module_names: list, max_hops: int = 2) -> dict:
     }
 
 
+def predict_missing_changes(changed_modules: list, min_weight: int = 5,
+                             top_k: int = 20) -> dict:
+    """Predict modules likely missing from a changeset based on co-change history.
+
+    Given a set of changed modules (e.g. from a PR), finds co-change neighbors
+    that are NOT in the changeset but historically change together with the
+    changed modules. Higher confidence = more often changed together.
+
+    Returns:
+    {
+      "changed": [str, ...],
+      "predictions": [{"module", "reason", "weight", "confidence", "service"}, ...],
+      "coverage_score": float  (0-1, how well the changeset covers expected changes)
+    }
+    """
+    changed_set = set(m for m in changed_modules if m)
+    if not changed_set or not cochange_index:
+        return {"changed": list(changed_set), "predictions": [], "coverage_score": 1.0}
+
+    # Gather co-change evidence for each changed module
+    candidate_evidence: dict = {}  # module → {"total_weight", "sources", "max_single"}
+
+    for mod in changed_set:
+        cc_key = _resolve_cc(mod)
+        neighbors = cochange_index.get(cc_key, [])
+        for nb in neighbors:
+            nb_mod = _resolve_mg(nb["module"])
+            w = nb["weight"]
+            if w < min_weight or nb_mod in changed_set:
+                continue
+            if nb_mod not in candidate_evidence:
+                candidate_evidence[nb_mod] = {
+                    "total_weight": 0, "max_single": 0, "sources": []
+                }
+            candidate_evidence[nb_mod]["total_weight"] += w
+            candidate_evidence[nb_mod]["max_single"] = max(
+                candidate_evidence[nb_mod]["max_single"], w)
+            candidate_evidence[nb_mod]["sources"].append(
+                {"from": mod, "weight": w})
+
+    # Score and rank predictions
+    predictions = []
+    for mod, ev in candidate_evidence.items():
+        # Confidence: how many changed modules point to this candidate
+        source_count = len(ev["sources"])
+        # Normalize confidence: multiple sources + high weight = high confidence
+        confidence = min(1.0, (ev["total_weight"] / 50) * (source_count / len(changed_set)))
+
+        svc = ""
+        if MG is not None and mod in MG.nodes:
+            svc = MG.nodes[mod].get("service", "")
+
+        # Build human-readable reason
+        top_source = max(ev["sources"], key=lambda s: s["weight"])
+        if source_count == 1:
+            reason = f"co-changes with {top_source['from']} (w={top_source['weight']})"
+        else:
+            reason = (f"co-changes with {source_count} changed modules "
+                      f"(strongest: {top_source['from']}, w={top_source['weight']})")
+
+        predictions.append({
+            "module": mod,
+            "reason": reason,
+            "weight": ev["total_weight"],
+            "confidence": round(confidence, 3),
+            "service": svc,
+            "source_count": source_count,
+        })
+
+    predictions.sort(key=lambda x: (-x["confidence"], -x["weight"]))
+    predictions = predictions[:top_k]
+
+    # Coverage score: what fraction of expected changes are actually in the changeset
+    total_expected = len(changed_set) + len([p for p in predictions if p["confidence"] > 0.3])
+    coverage = len(changed_set) / total_expected if total_expected > 0 else 1.0
+
+    return {
+        "changed": sorted(changed_set),
+        "predictions": predictions,
+        "coverage_score": round(coverage, 3),
+    }
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # BM25  (exact-match complement to dense vector search)
 # ════════════════════════════════════════════════════════════════════════════

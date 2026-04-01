@@ -311,6 +311,67 @@ def get_blast_radius(files_or_modules: list[str], max_hops: int = 2) -> str:
 
 
 @mcp.tool()
+def predict_missing_changes(changed_files: list[str], min_confidence: float = 0.1) -> str:
+    """
+    Predict modules likely MISSING from a changeset (PR review assistant).
+
+    Given files changed in a PR, uses co-change history to predict what other
+    modules typically change together but are NOT in the changeset. High
+    confidence = "you almost certainly forgot this."
+
+    Use cases:
+    - PR review: "these files usually change together, did you forget one?"
+    - Pre-commit check: "your change touches X, you might also need to update Y"
+    - Refactoring: "changing this module historically requires changes to these others"
+
+    Pass git diff --name-only output directly — file paths are auto-resolved.
+
+    Examples:
+      predict_missing_changes(["euler-api-gateway/src/Routes.hs"])
+      predict_missing_changes(["Euler.API.Gateway.Routes", "Euler.API.Txns.Flow"])
+
+    Args:
+        changed_files: File paths (from git diff) or module names. Both work.
+        min_confidence: Minimum confidence threshold (0-1). Default 0.1.
+    """
+    resolved = RE.resolve_files_to_modules(changed_files)
+    changed_mods = []
+    for f, mods in resolved.items():
+        if mods:
+            changed_mods.extend(mods)
+        elif "." in f or "::" in f:
+            changed_mods.append(f)
+
+    if not changed_mods:
+        return ("Could not resolve any inputs to known modules.\n"
+                "Try passing module names directly (e.g. 'Euler.API.Gateway.Routes').")
+
+    result = RE.predict_missing_changes(changed_mods)
+
+    lines = ["## Missing Change Predictions"]
+    lines.append(f"\n**Changed modules ({len(result['changed'])}):** "
+                 + ", ".join(result["changed"][:10])
+                 + ("..." if len(result["changed"]) > 10 else ""))
+    lines.append(f"**Coverage score:** {result['coverage_score']:.0%}"
+                 " (higher = changeset looks complete)")
+
+    preds = [p for p in result["predictions"] if p["confidence"] >= min_confidence]
+    if preds:
+        lines.append(f"\n### Predicted Missing Changes ({len(preds)} modules)")
+        lines.append("")
+        for p in preds:
+            conf_bar = "█" * int(p["confidence"] * 10) + "░" * (10 - int(p["confidence"] * 10))
+            lines.append(f"  {conf_bar} {p['confidence']:.0%}  "
+                         f"[{p['service'] or '?'}] **{p['module']}**")
+            lines.append(f"         {p['reason']}")
+    else:
+        lines.append("\n✓ No high-confidence missing changes detected. "
+                     "Changeset looks complete.")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def get_context(
     query: str,
     persona: str = "default",

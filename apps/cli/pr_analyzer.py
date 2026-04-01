@@ -128,10 +128,13 @@ def _print_summary(files, seed_modules, unresolved, blast, fmt):
     return sec_flagged
 
 
-def _guardian_report(files, seed_mods, unresolved, blast, missing, fmt, rules=None):
+def _guardian_report(files, seed_mods, unresolved, blast, missing, fmt, rules=None,
+                     reviewers=None):
     """Generate a Guardian Mode report: blast radius + missing changes + verdict."""
     if rules is None:
         rules = _DEFAULT_RULES
+    if reviewers is None:
+        reviewers = {"reviewers": [], "source": "unavailable"}
     coverage = missing.get("coverage_score", 1.0)
     predictions = missing.get("predictions", [])
     sec_keywords = _resolve_security_keywords(rules)
@@ -172,6 +175,7 @@ def _guardian_report(files, seed_mods, unresolved, blast, missing, fmt, rules=No
             "security_flagged": sec_flagged,
             "custom_rules_triggered": [{"name": r.get("name",""), "verdict": r.get("verdict","WARN"),
                                          "message": r.get("message","")} for r in custom_triggered],
+            "suggested_reviewers": reviewers.get("reviewers", []),
             "verdict": verdict,
         }, indent=2)
 
@@ -220,6 +224,20 @@ def _guardian_report(files, seed_mods, unresolved, blast, missing, fmt, rules=No
         lines.append("### Security-Sensitive Modules Touched\n")
         for m in sec_flagged:
             lines.append(f"- `{m}`")
+        lines.append("")
+
+    # Suggested reviewers
+    rev_list = reviewers.get("reviewers", [])
+    if rev_list:
+        lines.append("### Suggested Reviewers\n")
+        lines.append("_Based on module ownership from git history:_\n")
+        lines.append("| Reviewer | Commits | Modules |")
+        lines.append("|----------|---------|---------|")
+        for r in rev_list[:5]:
+            mod_str = ", ".join(f"`{m}`" for m in r["modules"][:3])
+            if len(r["modules"]) > 3:
+                mod_str += f" +{len(r['modules'])-3} more"
+            lines.append(f"| {r['name']} | {r['commits']} | {mod_str} |")
         lines.append("")
 
     # Unresolved
@@ -451,7 +469,9 @@ def main():
         rules = _load_guardian_rules(rules_path)
 
         missing = RE.predict_missing_changes(seed_mods)
-        report = _guardian_report(files, seed_mods, unresolved, blast, missing, args.format, rules)
+        reviewers = RE.suggest_reviewers(seed_mods) if hasattr(RE, 'suggest_reviewers') else {}
+        report = _guardian_report(files, seed_mods, unresolved, blast, missing, args.format, rules,
+                                  reviewers=reviewers)
         print(report)
         # Exit non-zero on FAIL verdict
         if args.format != "json":

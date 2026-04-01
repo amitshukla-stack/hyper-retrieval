@@ -53,6 +53,7 @@ reranker:      object = None   # CrossEncoder — disabled (kept for reference)
 
 cluster_summaries:   dict  = {}
 cochange_index:      dict  = {}
+ownership_index:     dict  = {}   # module → [{"email","name","commits"}, ...]
 file_to_nodes:       dict  = {}   # module_name → [node_id, ...]
 filepath_to_module:  dict  = {}   # relative_file_path → module_name
 _cochange_loaded_at: float = 0.0
@@ -373,6 +374,16 @@ def initialize(
             _build_cochange_name_map()
         else:
             print("  co-change index: not built yet")
+
+        ownership_path = artifact_dir / "ownership_index.json"
+        if ownership_path.exists():
+            print("Loading ownership index...")
+            with open(str(ownership_path)) as _f:
+                oi = json.load(_f)
+            ownership_index.update(oi.get("modules", {}))
+            meta_oi = oi.get("meta", {})
+            print(f"  {meta_oi.get('total_modules',0):,} modules  "
+                  f"{meta_oi.get('total_unique_authors',0):,} authors")
 
         # Inject synthetic co-change edges from call_graph (cold-start fix)
         if call_graph and cochange_index is not None:
@@ -884,6 +895,79 @@ def predict_missing_changes(changed_modules: list, min_weight: int = 5,
         "changed": sorted(changed_set),
         "predictions": predictions,
         "coverage_score": round(coverage, 3),
+    }
+
+
+def suggest_reviewers(changed_modules: list, top_k: int = 5) -> dict:
+    """Suggest PR reviewers based on module ownership from git history.
+
+    For each changed module + its blast radius neighbors, looks up who has
+    changed those modules most frequently. Returns ranked reviewers with
+    context about which modules they own.
+
+    Returns:
+    {
+      "reviewers": [{"email", "name", "score", "modules": [str], "commits"}, ...],
+      "coverage": {"module": [top_author_email, ...], ...},
+      "source": "ownership_index" | "unavailable"
+    }
+    """
+    if not ownership_index:
+        return {"reviewers": [], "coverage": {}, "source": "unavailable"}
+
+    changed_set = set(m for m in changed_modules if m)
+    if not changed_set:
+        return {"reviewers": [], "coverage": {}, "source": "ownership_index"}
+
+    # Get blast radius to include affected neighbors
+    blast = get_blast_radius(list(changed_set), max_hops=1)
+    all_modules = set(changed_set)
+    for n in blast.get("import_neighbors", []):
+        all_modules.add(n["module"])
+    for n in blast.get("cochange_neighbors", []):
+        all_modules.add(n["module"])
+
+    # Aggregate author scores across all affected modules
+    author_scores = {}  # email -> {"score", "modules", "commits", "name"}
+
+    for mod in all_modules:
+        # Try direct lookup, then cochange key
+        cc_key = _resolve_cc(mod)
+        authors = ownership_index.get(mod) or ownership_index.get(cc_key) or []
+
+        for author in authors:
+            email = author["email"]
+            # Weight: direct changes scored higher than blast radius neighbors
+            weight = 2.0 if mod in changed_set else 1.0
+            score = author["commits"] * weight
+
+            if email not in author_scores:
+                author_scores[email] = {
+                    "email": email,
+                    "name": author["name"],
+                    "score": 0,
+                    "commits": 0,
+                    "modules": [],
+                }
+            author_scores[email]["score"] += score
+            author_scores[email]["commits"] += author["commits"]
+            if mod not in author_scores[email]["modules"]:
+                author_scores[email]["modules"].append(mod)
+
+    # Rank and return top-k reviewers
+    reviewers = sorted(author_scores.values(), key=lambda x: -x["score"])[:top_k]
+
+    # Per-module coverage: who's the top author for each changed module
+    coverage = {}
+    for mod in changed_set:
+        cc_key = _resolve_cc(mod)
+        authors = ownership_index.get(mod) or ownership_index.get(cc_key) or []
+        coverage[mod] = [a["email"] for a in authors[:3]]
+
+    return {
+        "reviewers": reviewers,
+        "coverage": coverage,
+        "source": "ownership_index",
     }
 
 

@@ -447,12 +447,70 @@ def check_my_changes(changed_files: list[str]) -> str:
         for m in sec_flagged[:5]:
             lines.append(f"  - `{m}`")
 
+    # Suggested reviewers
+    rev_data = RE.suggest_reviewers(changed_mods, top_k=3)
+    if rev_data.get("reviewers"):
+        lines.append("\n### Suggested Reviewers")
+        for r in rev_data["reviewers"][:3]:
+            mods = ", ".join(r["modules"][:3])
+            lines.append(f"  - **{r['name']}** ({r['commits']} commits) -- {mods}")
+
     if status == "PASS":
         lines.append("\n*Your changes look complete. Safe to commit.*")
     elif status == "WARN":
         lines.append("\n*Review the warnings above before committing.*")
     else:
         lines.append("\n*Your changeset is likely incomplete. Add the missing files or confirm they are intentionally excluded.*")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def suggest_reviewers(changed_files: list[str], top_k: int = 5) -> str:
+    """
+    Suggest PR reviewers based on module ownership from git history.
+
+    Given changed files or module names, finds who has the most commits
+    on the affected modules and their blast radius neighbors.
+
+    Returns ranked reviewers with commit counts and module coverage.
+
+    Examples:
+      suggest_reviewers(["PaymentFlows", "TransactionHelper"])
+      suggest_reviewers(["euler-api-gateway/src/Routes.hs"])
+    """
+    # Resolve files to modules
+    resolved = RE.resolve_files_to_modules(changed_files)
+    changed_mods = []
+    for f, mods in resolved.items():
+        if mods:
+            changed_mods.extend(mods)
+        elif "." in f or "::" in f:
+            changed_mods.append(f)
+
+    if not changed_mods:
+        return ("Could not resolve any inputs to known modules.\n"
+                "Try passing module names directly (e.g. 'PaymentFlows').")
+
+    result = RE.suggest_reviewers(changed_mods, top_k=top_k)
+
+    if not result.get("reviewers"):
+        return ("No ownership data available. Run build/08_build_ownership.py first\n"
+                "to generate the ownership index from git history.")
+
+    lines = ["## Suggested Reviewers\n"]
+    lines.append("| Rank | Reviewer | Commits | Relevant Modules |")
+    lines.append("|------|----------|---------|------------------|")
+    for i, r in enumerate(result["reviewers"], 1):
+        mods = ", ".join(f"`{m}`" for m in r["modules"][:3])
+        if len(r["modules"]) > 3:
+            mods += f" +{len(r['modules'])-3} more"
+        lines.append(f"| {i} | {r['name']} | {r['commits']} | {mods} |")
+
+    lines.append("\n### Per-Module Coverage\n")
+    for mod, authors in result.get("coverage", {}).items():
+        if authors:
+            lines.append(f"- `{mod}`: {', '.join(authors[:3])}")
 
     return "\n".join(lines)
 

@@ -951,13 +951,17 @@ def _inject_synthetic_cochange():
 # UNIFIED SEARCH  (vector + BM25 via RRF, service-weight-aware)
 # ════════════════════════════════════════════════════════════════════════════
 
-def _cochange_expand(seed_results: dict, top_seed: int = 10,
-                     max_neighbors: int = 30) -> dict:
+def _cochange_expand(seed_results: dict, top_seed: int = 5,
+                     max_neighbors: int = 15,
+                     nodes_per_module: int = 5) -> dict:
     """Build a co-change result dict from seed search results.
 
     1. Extract top modules from seed results (by rank)
     2. Find co-change neighbors (1-hop, weight >= 5)
     3. Return {service: [node_dict with _cochange_score, ...]} for RRF
+
+    Caps at ``nodes_per_module`` nodes per neighbor module to avoid
+    flooding results from large modules (e.g. Gateway.Common has 300+ symbols).
     """
     if not cochange_index or G is None:
         return {}
@@ -965,7 +969,6 @@ def _cochange_expand(seed_results: dict, top_seed: int = 10,
     # Extract top modules from seed results
     flat = [(n.get("_rrf_score", 0) or n.get("_distance", 1), n)
             for nodes in seed_results.values() for n in nodes]
-    # Sort: _rrf_score desc or _distance asc
     if flat and "_rrf_score" in flat[0][1]:
         flat.sort(key=lambda x: -x[0])
     else:
@@ -973,7 +976,7 @@ def _cochange_expand(seed_results: dict, top_seed: int = 10,
 
     seed_modules = []
     seen_mods = set()
-    for _, node in flat[:top_seed * 3]:  # scan more nodes to get enough modules
+    for _, node in flat[:top_seed * 3]:
         mod = node.get("module", "")
         if mod and mod not in seen_mods:
             seen_mods.add(mod)
@@ -984,20 +987,21 @@ def _cochange_expand(seed_results: dict, top_seed: int = 10,
     if not seed_modules:
         return {}
 
-    # Get co-change neighbors (1-hop only, weight >= 5 for quality)
     neighbors = cochange_path_traverse(seed_modules, max_hops=1,
                                        top_k=10, min_weight=5)
     if not neighbors:
         return {}
 
-    # Convert neighbor modules to nodes, scored by co-change weight
+    # Convert neighbor modules to nodes, capped per module
     results: dict = defaultdict(list)
-    count = 0
     for nb in neighbors[:max_neighbors]:
         mod_name = nb["module"]
         weight = nb["weight"]
         node_ids = file_to_nodes.get(mod_name, [])
+        mod_count = 0
         for nid in node_ids:
+            if mod_count >= nodes_per_module:
+                break
             if nid not in G.nodes:
                 continue
             d = G.nodes[nid]
@@ -1011,7 +1015,7 @@ def _cochange_expand(seed_results: dict, top_seed: int = 10,
                 "_cochange_score": float(weight),
             }
             results[node["service"] or "unknown"].append(node)
-            count += 1
+            mod_count += 1
     return dict(results)
 
 

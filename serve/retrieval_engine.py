@@ -874,6 +874,10 @@ def rrf_merge(*result_dicts, k: int = 60) -> dict:
             flat.sort(key=lambda x: x.get("_distance", 1.0))
         elif "_bm25_score" in flat[0]:
             flat.sort(key=lambda x: -x.get("_bm25_score", 0))
+        elif "_cochange_score" in flat[0]:
+            flat.sort(key=lambda x: -x.get("_cochange_score", 0))
+        elif "_rrf_score" in flat[0]:
+            flat.sort(key=lambda x: -x.get("_rrf_score", 0))
         else:
             flat.sort(key=lambda x: -x.get("_kw_score", 0))
 
@@ -947,9 +951,73 @@ def _inject_synthetic_cochange():
 # UNIFIED SEARCH  (vector + BM25 via RRF, service-weight-aware)
 # ════════════════════════════════════════════════════════════════════════════
 
+def _cochange_expand(seed_results: dict, top_seed: int = 10,
+                     max_neighbors: int = 30) -> dict:
+    """Build a co-change result dict from seed search results.
+
+    1. Extract top modules from seed results (by rank)
+    2. Find co-change neighbors (1-hop, weight >= 5)
+    3. Return {service: [node_dict with _cochange_score, ...]} for RRF
+    """
+    if not cochange_index or G is None:
+        return {}
+
+    # Extract top modules from seed results
+    flat = [(n.get("_rrf_score", 0) or n.get("_distance", 1), n)
+            for nodes in seed_results.values() for n in nodes]
+    # Sort: _rrf_score desc or _distance asc
+    if flat and "_rrf_score" in flat[0][1]:
+        flat.sort(key=lambda x: -x[0])
+    else:
+        flat.sort(key=lambda x: x[0])
+
+    seed_modules = []
+    seen_mods = set()
+    for _, node in flat[:top_seed * 3]:  # scan more nodes to get enough modules
+        mod = node.get("module", "")
+        if mod and mod not in seen_mods:
+            seen_mods.add(mod)
+            seed_modules.append(mod)
+            if len(seed_modules) >= top_seed:
+                break
+
+    if not seed_modules:
+        return {}
+
+    # Get co-change neighbors (1-hop only, weight >= 5 for quality)
+    neighbors = cochange_path_traverse(seed_modules, max_hops=1,
+                                       top_k=10, min_weight=5)
+    if not neighbors:
+        return {}
+
+    # Convert neighbor modules to nodes, scored by co-change weight
+    results: dict = defaultdict(list)
+    count = 0
+    for nb in neighbors[:max_neighbors]:
+        mod_name = nb["module"]
+        weight = nb["weight"]
+        node_ids = file_to_nodes.get(mod_name, [])
+        for nid in node_ids:
+            if nid not in G.nodes:
+                continue
+            d = G.nodes[nid]
+            node = {
+                "id": nid,
+                "name": d.get("name", nid),
+                "module": mod_name,
+                "service": d.get("service", ""),
+                "type": d.get("type", ""),
+                "file": d.get("file", ""),
+                "_cochange_score": float(weight),
+            }
+            results[node["service"] or "unknown"].append(node)
+            count += 1
+    return dict(results)
+
+
 def unified_search(queries: list, k_total: int = 250) -> dict:
     """
-    Primary search entry point. Fuses dense vector + BM25 via RRF.
+    Primary search entry point. Fuses dense vector + BM25 + co-change via RRF.
     Service budget allocated proportional to traffic_weight from SERVICE_PROFILES.
     Falls back gracefully: vector → BM25 → keyword.
     """
@@ -967,6 +1035,12 @@ def unified_search(queries: list, k_total: int = 250) -> dict:
         merged = rrf_merge(*sources)
     else:
         merged = cross_service_keyword_search(queries[0] if queries else "")
+
+    # Co-change expansion: add evolutionary coupling signal to RRF
+    if cochange_index and merged:
+        cochange_results = _cochange_expand(merged)
+        if cochange_results:
+            merged = rrf_merge(merged, cochange_results)
 
     # Apply per-service cap based on traffic_weight
     if SERVICE_PROFILES:

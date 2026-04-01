@@ -244,9 +244,51 @@ else:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 9. Guardian Mode — predict_missing_changes + blast_radius integration
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== 9. Guardian Mode (predict_missing_changes + blast_radius) ===")
+
+# Test 1: predict_missing_changes returns predictions for a single module
+missing = RE.predict_missing_changes(["PaymentFlows"])
+if missing["predictions"] and len(missing["predictions"]) > 0:
+    ok(f"predict_missing_changes('PaymentFlows'): {len(missing['predictions'])} predictions")
+else:
+    fail("predict_missing_changes('PaymentFlows') should return predictions")
+
+# Test 2: coverage_score is between 0 and 1
+if 0 <= missing["coverage_score"] <= 1:
+    ok(f"coverage_score in [0,1]: {missing['coverage_score']:.2f}")
+else:
+    fail(f"coverage_score out of range: {missing['coverage_score']}")
+
+# Test 3: known co-change neighbor appears in predictions
+known_cochange = {"Product.OLTP.Transaction", "TransactionHelper", "TransactionTransforms"}
+predicted_mods = {p["module"] for p in missing["predictions"]}
+found = known_cochange & predicted_mods
+if found:
+    ok(f"Known co-change neighbors predicted: {found.pop()}")
+else:
+    fail("Expected at least one of Product.OLTP.Transaction / TransactionHelper / TransactionTransforms",
+         f"Got: {[p['module'] for p in missing['predictions'][:5]]}")
+
+# Test 4: blast_radius returns services for PaymentFlows
+blast = RE.get_blast_radius(["PaymentFlows"])
+if blast["affected_services"]:
+    ok(f"blast_radius('PaymentFlows'): {len(blast['affected_services'])} services")
+else:
+    fail("blast_radius('PaymentFlows') should return affected services")
+
+# Test 5: co-change neighbors present in blast radius
+if blast["cochange_neighbors"]:
+    ok(f"blast_radius includes {len(blast['cochange_neighbors'])} co-change neighbors")
+else:
+    fail("blast_radius should include co-change neighbors for PaymentFlows")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ══════════════════════════════════════════════════════════════════════════════
-n_sections = 8
+n_sections = 9
 print()
 if errors:
     print(f"\033[91m{len(errors)} FAILED: {errors}\033[0m")

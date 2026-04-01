@@ -11,7 +11,7 @@ GPU sharing: set EMBED_SERVER_URL=http://localhost:8001 and the embedder
 runs as a separate service (embed_server.py). Both Chainlit and MCP server
 then share one GPU load via HTTP — no OOM.
 """
-import json, os, pathlib, re, time, threading, urllib.request, urllib.error
+import json, math, os, pathlib, re, time, threading, urllib.request, urllib.error
 from collections import defaultdict
 try:
     from rank_bm25 import BM25Okapi as _BM25Okapi
@@ -82,16 +82,8 @@ KNOWN_SERVICES: list = [
     "euler-api-customer", "basilisk-v3", "euler-drainer",
     "token_issuer_portal_backend", "haskell-sequelize",
 ]
-_KW_STOPWORDS: set = {
-    "what", "does", "that", "this", "with", "from", "have", "been", "when",
-    "where", "which", "will", "would", "could", "should", "work", "works",
-    "tell", "show", "give", "list", "find", "about", "around", "across",
-    "service", "services",
-    "code", "function", "module", "support", "supports", "using", "used", "uses",
-    "handle", "handles", "process", "processes", "call", "calls",
-    "implement", "implemented", "implementation",
-}
 _KW_ALLOWLIST: set = {"upi", "pix", "emi", "ucs", "cvv", "pan", "otp", "kyc", "bnpl", "nfc", "qr"}
+_idf: dict = {}  # built during initialize(); word → IDF score
 
 # Known payment gateway names — used to generate better query variants.
 # We deliberately don't hardcode gateway→service here since routing varies per deployment.
@@ -232,7 +224,7 @@ def initialize(
     """
     global embedder, _llm_client, G, MG, lance_tbl, cluster_summaries
     global body_store, call_graph, log_patterns, doc_chunks, doc_by_id, gw_integrity
-    global doc_lance_tbl, _cochange_loaded_at
+    global doc_lance_tbl, _cochange_loaded_at, _idf
 
     if config_path:
         load_config(config_path)
@@ -282,6 +274,20 @@ def initialize(
         }
         nx.set_node_attributes(G, cluster_attrs)
         print(f"  {G.number_of_nodes():,} nodes  {G.number_of_edges():,} edges  {len(cluster_summaries)} summaries")
+
+        # Build IDF index for keyword search
+        _doc_freq: dict[str, int] = defaultdict(int)
+        _n_nodes = 0
+        for _nid, _nd in G.nodes(data=True):
+            if _nd.get("kind") == "phantom":
+                continue
+            _n_nodes += 1
+            _tokens = set(re.split(r"\W+", (_nd.get("name", "") + " " + _nd.get("module", "")).lower()))
+            for _tok in _tokens:
+                if _tok:
+                    _doc_freq[_tok] += 1
+        _idf = {w: math.log(_n_nodes / df) for w, df in _doc_freq.items()}
+        print(f"  IDF index: {len(_idf):,} terms from {_n_nodes:,} nodes")
 
         print("Building module-level traversal graph...")
         _mg = nx.DiGraph()
@@ -554,10 +560,12 @@ def cross_service_keyword_search(query: str, max_per_service: int = 15) -> dict:
         return {}
     words = [
         w.lower() for w in re.split(r"\W+", query)
-        if (len(w) >= 4 or w.lower() in _KW_ALLOWLIST) and w.lower() not in _KW_STOPWORDS
+        if len(w) >= 4 or w.lower() in _KW_ALLOWLIST
     ]
     if not words:
         return {}
+    # IDF for unseen words: maximally discriminating
+    _max_idf = math.log(G.number_of_nodes()) if G.number_of_nodes() > 0 else 1.0
     prod_results: dict = defaultdict(list)
     test_results: dict = defaultdict(list)
     seen: set = set()
@@ -565,11 +573,11 @@ def cross_service_keyword_search(query: str, max_per_service: int = 15) -> dict:
         if d.get("kind") == "phantom":
             continue
         haystack = (d.get("name", "") + " " + d.get("module", "")).lower()
-        match_count = sum(1 for w in words if w in haystack)
-        if match_count > 0 and nid not in seen:
+        score = sum(_idf.get(w, _max_idf) for w in words if w in haystack)
+        if score > 0 and nid not in seen:
             svc = d.get("service", "unknown")
             seen.add(nid)
-            node = {**d, "id": nid, "_kw_score": match_count}
+            node = {**d, "id": nid, "_kw_score": score}
             bucket = test_results if _is_test_path(d.get("file", "")) else prod_results
             bucket[svc].append(node)
 

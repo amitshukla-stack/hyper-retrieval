@@ -1,0 +1,126 @@
+name: HyperRetrieval Guardian
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+env:
+  ARTIFACT_DIR: ${{ vars.HYPERRETRIEVAL_ARTIFACT_DIR || '.hyperretrieval/artifacts' }}
+
+jobs:
+  guardian:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout HyperRetrieval
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.HYPERRETRIEVAL_REPO || 'amitshukla-stack/hyper-retrieval' }}
+          path: .hyperretrieval
+          token: ${{ secrets.HYPERRETRIEVAL_TOKEN || github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install networkx lancedb pyyaml pyarrow
+
+      - name: Download artifacts
+        if: ${{ vars.ARTIFACT_DOWNLOAD_URL != '' }}
+        run: |
+          mkdir -p ${{ env.ARTIFACT_DIR }}
+          curl -sL "${{ vars.ARTIFACT_DOWNLOAD_URL }}" | tar -xz -C ${{ env.ARTIFACT_DIR }}
+
+      - name: Get changed files
+        id: changed
+        run: |
+          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }} | tr '\n' ' ')
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          echo "count=$(echo "$FILES" | wc -w)" >> "$GITHUB_OUTPUT"
+
+      - name: Run Guardian analysis
+        id: guardian
+        continue-on-error: true
+        run: |
+          REPORT=$(python3 .hyperretrieval/apps/cli/pr_analyzer.py \
+            --mode guardian \
+            --artifact-dir "${{ env.ARTIFACT_DIR }}" \
+            --files ${{ steps.changed.outputs.files }} \
+            2>/dev/null)
+
+          # Save report for comment step
+          echo "$REPORT" > /tmp/guardian_report.md
+
+          # Also generate JSON for machine parsing
+          python3 .hyperretrieval/apps/cli/pr_analyzer.py \
+            --mode guardian \
+            --format json \
+            --artifact-dir "${{ env.ARTIFACT_DIR }}" \
+            --files ${{ steps.changed.outputs.files }} \
+            2>/dev/null > /tmp/guardian_report.json || true
+
+      - name: Post PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('/tmp/guardian_report.md', 'utf8');
+
+            if (!report.trim()) {
+              console.log('No Guardian report generated (no modules resolved)');
+              return;
+            }
+
+            const body = `### HyperRetrieval Guardian\n\n${report}\n\n---\n_Powered by [HyperRetrieval](https://github.com/amitshukla-stack/hyper-retrieval) Guardian Mode_`;
+
+            // Find existing Guardian comment to update (avoid spam)
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c =>
+              c.body.includes('HyperRetrieval Guardian') &&
+              c.user.type === 'Bot'
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              console.log('Updated existing Guardian comment');
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+              console.log('Created new Guardian comment');
+            }
+
+      - name: Check verdict
+        if: ${{ vars.GUARDIAN_BLOCKING == 'true' }}
+        run: |
+          if [ -f /tmp/guardian_report.json ]; then
+            STATUS=$(python3 -c "import json; d=json.load(open('/tmp/guardian_report.json')); print(d.get('verdict',{}).get('status','PASS'))")
+            if [ "$STATUS" = "FAIL" ]; then
+              echo "::error::Guardian verdict: FAIL — PR is likely incomplete"
+              exit 1
+            fi
+          fi

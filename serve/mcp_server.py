@@ -372,6 +372,92 @@ def predict_missing_changes(changed_files: list[str], min_confidence: float = 0.
 
 
 @mcp.tool()
+def check_my_changes(changed_files: list[str]) -> str:
+    """
+    SDLC guardian: run ALL quality checks on your changes in one call.
+
+    Combines blast_radius + predict_missing_changes + security scan into a
+    single verdict. Designed for AI coding agents to self-check BEFORE
+    committing or opening a PR.
+
+    Returns: PASS / WARN / FAIL with reasons and action items.
+
+    Use this AFTER writing code but BEFORE committing to catch:
+    - Missing files that historically co-change with your modifications
+    - Unexpectedly large blast radius across services
+    - Security-sensitive modules that need extra review
+
+    Examples:
+      check_my_changes(["euler-api-gateway/src/Routes.hs"])
+      check_my_changes(["PaymentFlows", "TransactionHelper"])
+    """
+    # Resolve files to modules
+    resolved = RE.resolve_files_to_modules(changed_files)
+    changed_mods = []
+    for f, mods in resolved.items():
+        if mods:
+            changed_mods.extend(mods)
+        elif "." in f or "::" in f:
+            changed_mods.append(f)
+
+    if not changed_mods:
+        return ("Could not resolve any inputs to known modules.\n"
+                "Try passing module names directly (e.g. 'PaymentFlows').")
+
+    # Run both analyses
+    blast = RE.get_blast_radius(changed_mods, max_hops=2)
+    missing = RE.predict_missing_changes(changed_mods)
+
+    coverage = missing.get("coverage_score", 1.0)
+    predictions = missing.get("predictions", [])
+    n_services = len(blast["affected_services"])
+    all_affected = changed_mods + [n["module"] for n in blast["import_neighbors"]]
+    _sec_kw = {"auth", "token", "credential", "secret", "password",
+               "encrypt", "hmac", "signature", "session", "oauth", "jwt"}
+    sec_flagged = [m for m in all_affected
+                   if any(kw in m.lower() for kw in _sec_kw)]
+
+    # Determine verdict
+    if coverage < 0.5 and len(predictions) >= 3:
+        status, reason = "FAIL", f"PR completeness {coverage:.0%} with {len(predictions)} likely-missing files"
+    elif sec_flagged:
+        status, reason = "WARN", f"{len(sec_flagged)} security-sensitive module(s) touched"
+    elif coverage < 0.8:
+        status, reason = "WARN", f"PR completeness {coverage:.0%} -- review suggested"
+    elif n_services > 3:
+        status, reason = "WARN", f"Blast radius spans {n_services} services"
+    else:
+        status, reason = "PASS", f"PR completeness {coverage:.0%}, blast radius contained"
+
+    # Build report
+    lines = [f"## Guardian Check: {status}", f"\n**{reason}**\n"]
+    lines.append(f"- **Changed modules:** {len(changed_mods)}")
+    lines.append(f"- **Affected services:** {n_services} ({', '.join(blast['affected_services'][:5])}{'...' if n_services > 5 else ''})")
+    lines.append(f"- **Import neighbors:** {len(blast['import_neighbors'])}")
+    lines.append(f"- **Co-change neighbors:** {len(blast['cochange_neighbors'])}")
+    lines.append(f"- **PR completeness:** {coverage:.0%}")
+
+    if predictions[:5]:
+        lines.append("\n### Likely Missing")
+        for p in predictions[:5]:
+            lines.append(f"  - **{p['module']}** ({p['confidence']:.0%}) -- {p['reason']}")
+
+    if sec_flagged[:5]:
+        lines.append("\n### Security Review Needed")
+        for m in sec_flagged[:5]:
+            lines.append(f"  - `{m}`")
+
+    if status == "PASS":
+        lines.append("\n*Your changes look complete. Safe to commit.*")
+    elif status == "WARN":
+        lines.append("\n*Review the warnings above before committing.*")
+    else:
+        lines.append("\n*Your changeset is likely incomplete. Add the missing files or confirm they are intentionally excluded.*")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def get_context(
     query: str,
     persona: str = "default",

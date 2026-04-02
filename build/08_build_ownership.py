@@ -26,7 +26,7 @@ except ImportError:
     cfg = {}
 
 SRC_EXTS  = {".hs", ".rs", ".hs-boot", ".py", ".ts", ".js", ".tsx", ".jsx", ".groovy"}
-SKIP_DIRS = {".stack-work", "node_modules", "__pycache__", ".git", "dist", "build"}
+SKIP_DIRS = {".stack-work", "node_modules", "__pycache__", ".git", "dist", "venv", ".venv"}
 MAX_FILES = 40
 
 

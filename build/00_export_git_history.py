@@ -45,7 +45,7 @@ def export_repo(repo_path: pathlib.Path) -> list[dict]:
     # --name-only gives us changed file paths
     # --diff-filter=AMRC excludes deleted files
     result = subprocess.run(
-        ["git", "log", "--all", "--pretty=format:" + SEP + "%H" + FIELD_SEP + "%aI",
+        ["git", "log", "--all", "--pretty=format:" + SEP + "%H" + FIELD_SEP + "%aI" + FIELD_SEP + "%aN" + FIELD_SEP + "%aE",
          "--name-only", "--diff-filter=AMRC"],
         cwd=repo_path,
         capture_output=True,
@@ -74,6 +74,8 @@ def export_repo(repo_path: pathlib.Path) -> list[dict]:
         parts = header.split(FIELD_SEP)
         commit_hash = parts[0].strip()
         date = parts[1].strip() if len(parts) > 1 else ""
+        author_name = parts[2].strip() if len(parts) > 2 else ""
+        author_email = parts[3].strip() if len(parts) > 3 else ""
 
         files = []
         for line in lines[1:]:
@@ -85,6 +87,8 @@ def export_repo(repo_path: pathlib.Path) -> list[dict]:
             commits.append({
                 "hash": commit_hash,
                 "date": date,
+                "author_name": author_name,
+                "author_email": author_email,
                 "files_changed": files,
             })
 
@@ -95,11 +99,15 @@ def main():
     print(f"Source directory: {SOURCE_DIR}", flush=True)
     print(f"Output file: {OUTPUT}", flush=True)
 
-    # Find all git repos in source dir
+    # Find all git repos in source dir (subdirectories with .git)
     repos = sorted([
         d for d in SOURCE_DIR.iterdir()
         if d.is_dir() and (d / ".git").exists()
     ])
+
+    # If source_dir itself is a git repo and has no sub-repos, use it directly
+    if not repos and (SOURCE_DIR / ".git").exists():
+        repos = [SOURCE_DIR]
 
     print(f"Found {len(repos)} git repositories\n", flush=True)
 

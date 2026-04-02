@@ -1,0 +1,66 @@
+# Guardian rules for HyperRetrieval self-dogfood
+# Used by check_my_changes / score_change_risk to flag risky PRs
+
+# ── Risk threshold ───────────────────────────────────────────────────────────
+# PRs scoring above this get a WARN or FAIL verdict
+risk_threshold: 60
+
+# ── Scoring weights (must sum to 1.0) ───────────────────────────────────────
+weights:
+  blast_radius:          0.30   # how many modules are transitively affected
+  coverage_gap:          0.20   # changed files missing from test coverage
+  reviewer_concentration: 0.15  # bus factor — single-author modules are riskier
+  service_spread:        0.15   # changes spanning multiple services need more review
+  critical_module:       0.20   # touching critical modules amplifies risk
+
+# ── Critical modules ────────────────────────────────────────────────────────
+# Changes to these files automatically boost risk score.
+# Paths are relative to source_dir.
+critical_modules:
+  - path: serve/retrieval_engine.py
+    reason: "Core retrieval logic — all search, graph traversal, and tool implementations live here. Breakage affects every consumer."
+    severity: high
+
+  - path: serve/mcp_server.py
+    reason: "MCP protocol surface — breaking changes disconnect all IDE integrations."
+    severity: high
+
+  - path: serve/embed_server.py
+    reason: "Shared embedding server — dimension or API changes require full reindex."
+    severity: medium
+
+  - path: build/01_extract.py
+    reason: "AST extraction — bugs here corrupt the entire graph downstream."
+    severity: high
+
+  - path: build/02_build_graph.py
+    reason: "Graph construction — structural errors propagate to retrieval and blast radius."
+    severity: high
+
+  - path: build/03_embed.py
+    reason: "Embedding pipeline — changes may silently degrade search quality."
+    severity: medium
+
+# ── Auto-request reviewers for critical modules ─────────────────────────────
+auto_reviewers:
+  "serve/*":
+    - amit
+  "build/*":
+    - amit
+
+# ── Severity escalation ─────────────────────────────────────────────────────
+# high:   risk += 25 points when touched
+# medium: risk += 15 points when touched
+# low:    risk += 5  points when touched
+severity_scores:
+  high:   25
+  medium: 15
+  low:    5
+
+# ── Ignore patterns (don't count these in blast radius) ─────────────────────
+ignore_patterns:
+  - "**/__pycache__/**"
+  - "**/*.pyc"
+  - ".hyperretrieval/artifacts/**"
+  - "*.md"
+  - ".gitignore"

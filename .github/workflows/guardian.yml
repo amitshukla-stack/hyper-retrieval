@@ -21,11 +21,16 @@ jobs:
           fetch-depth: 0
 
       - name: Checkout HyperRetrieval
+        if: ${{ github.repository != (vars.HYPERRETRIEVAL_REPO || 'amitshukla-stack/hyper-retrieval') }}
         uses: actions/checkout@v4
         with:
           repository: ${{ vars.HYPERRETRIEVAL_REPO || 'amitshukla-stack/hyper-retrieval' }}
           path: .hyperretrieval
           token: ${{ secrets.HYPERRETRIEVAL_TOKEN || github.token }}
+
+      - name: Self-reference symlink
+        if: ${{ github.repository == (vars.HYPERRETRIEVAL_REPO || 'amitshukla-stack/hyper-retrieval') }}
+        run: ln -s "$GITHUB_WORKSPACE" .hyperretrieval
 
       - name: Set up Python
         uses: actions/setup-python@v5

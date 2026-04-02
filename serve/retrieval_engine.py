@@ -314,9 +314,13 @@ def initialize(
         print(f"  {_mg.number_of_nodes():,} modules  {_mg.number_of_edges():,} import edges  {cs_edges:,} cross-service")
 
         print("Loading vector index...")
-        db = lancedb.connect(LANCE_PATH)
-        lance_tbl = db.open_table("chunks")
-        print(f"  {len(lance_tbl):,} vectors @ 4096d")
+        try:
+            db = lancedb.connect(LANCE_PATH)
+            lance_tbl = db.open_table("chunks")
+            print(f"  {len(lance_tbl):,} vectors @ 4096d")
+        except (ValueError, FileNotFoundError, OSError) as e:
+            lance_tbl = None
+            print(f"  vectors.lance: not available ({e}) — keyword-only mode")
 
         try:
             doc_db = lancedb.connect(str(artifact_dir.parent / "output"))
@@ -469,18 +473,23 @@ def _build_cochange_name_map():
     mg_nodes = set(MG.nodes()) if MG is not None else set()
     for cc_key in cochange_index:
         parts = cc_key.split("::")
-        # Find first part that starts with uppercase → module name start
+        mg_name = None
+        # Strategy 1 (Haskell): find first uppercase segment → module name start
         for i, part in enumerate(parts):
             if part and part[0].isupper():
                 mg_name = ".".join(parts[i:])
-                _cc_to_mg[cc_key] = mg_name
-                # Only map mg→cc if the MG node actually exists (avoid ambiguity)
-                if mg_name in mg_nodes:
-                    _mg_to_cc[mg_name] = cc_key
-                elif mg_name not in _mg_to_cc:
-                    # Store even without MG match — useful for traversal results
-                    _mg_to_cc[mg_name] = cc_key
                 break
+        # Strategy 2 (Python/other): first segment is repo name, rest is module path
+        if mg_name is None and len(parts) >= 2:
+            mg_name = ".".join(parts[1:])
+        if mg_name:
+            _cc_to_mg[cc_key] = mg_name
+            # Only map mg→cc if the MG node actually exists (avoid ambiguity)
+            if mg_name in mg_nodes:
+                _mg_to_cc[mg_name] = cc_key
+            elif mg_name not in _mg_to_cc:
+                # Store even without MG match — useful for traversal results
+                _mg_to_cc[mg_name] = cc_key
     print(f"  Co-change name map: {len(_mg_to_cc):,} mg→cc, {len(_cc_to_mg):,} cc→mg")
 
 
@@ -666,9 +675,18 @@ def _resolve_mg(name: str) -> str:
 
 
 def cochange_path_traverse(seed_modules: list, max_hops: int = 4,
-                            top_k: int = 15, min_weight: int = 5) -> list:
+                            top_k: int = 15, min_weight: int = None) -> list:
     if not cochange_index:
         return []
+    # Auto-scale min_weight: small indexes need lower thresholds
+    if min_weight is None:
+        total_modules = len(cochange_index)
+        if total_modules < 50:
+            min_weight = 2
+        elif total_modules < 500:
+            min_weight = 3
+        else:
+            min_weight = 5
     visited = {}
     for m in seed_modules:
         cc_key = _resolve_cc(m)

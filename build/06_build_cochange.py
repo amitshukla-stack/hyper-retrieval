@@ -4,7 +4,7 @@ Stage 6 — Build evolutionary coupling graph from git history.
 Streams one commit at a time (O(1) memory).
 Handles truncated/incomplete JSON files gracefully — writes partial results.
 """
-import json, pathlib, sys
+import argparse, json, pathlib, sys
 from collections import defaultdict
 from itertools import combinations
 
@@ -13,13 +13,26 @@ try:
 except ImportError:
     raise SystemExit("pip install ijson")
 
-GIT_HISTORY = pathlib.Path("/home/beast/projects/mindmap/pipeline/git_history_export.json")
-ARTIFACT    = pathlib.Path("/home/beast/projects/mindmap/pipeline/demo_artifact")
-OUT_PATH    = ARTIFACT / "cochange_index.json"
+parser = argparse.ArgumentParser(description="Build co-change index from git history")
+parser.add_argument("--git-history", type=pathlib.Path,
+                    default=pathlib.Path("/home/beast/projects/workspaces/juspay/git_history.json"))
+parser.add_argument("--output", type=pathlib.Path, default=None,
+                    help="Output path (default: <artifact-dir>/cochange_index.json)")
+parser.add_argument("--artifact-dir", type=pathlib.Path, default=None)
+parser.add_argument("--min-weight", type=int, default=None,
+                    help="Min co-change weight (default: auto based on repo size)")
+_args = parser.parse_args()
 
-SRC_EXTS   = {".hs", ".rs", ".hs-boot"}
-SKIP_DIRS  = {".stack-work", "test", "tests", "spec", "mock", "node_modules", "__pycache__"}
-MIN_WEIGHT = 3
+GIT_HISTORY = _args.git_history
+if _args.output:
+    OUT_PATH = _args.output
+elif _args.artifact_dir:
+    OUT_PATH = _args.artifact_dir / "cochange_index.json"
+else:
+    OUT_PATH = GIT_HISTORY.parent / "cochange_index.json"
+
+SRC_EXTS   = {".hs", ".rs", ".hs-boot", ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".java"}
+SKIP_DIRS  = {".stack-work", "test", "tests", "spec", "mock", "node_modules", "__pycache__", ".git", "venv", ".venv"}
 TOP_K      = 30
 MAX_FILES  = 40  # skip mega-commits
 
@@ -99,6 +112,16 @@ def build():
     print(f"\n{status}: {total_commits:,} commits processed  {skipped} mega-commits skipped",
           flush=True)
     print(f"Unique modules with co-change partners: {len(cochange):,}", flush=True)
+
+    # Auto-scale MIN_WEIGHT based on repo size (small repos need lower threshold)
+    if _args.min_weight is not None:
+        MIN_WEIGHT = _args.min_weight
+    elif total_commits < 200:
+        MIN_WEIGHT = 2
+    elif total_commits < 1000:
+        MIN_WEIGHT = 2
+    else:
+        MIN_WEIGHT = 3
 
     # Filter: keep only pairs with weight >= MIN_WEIGHT, cap at TOP_K per module
     edges, total_pairs = {}, 0

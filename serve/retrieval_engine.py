@@ -789,6 +789,14 @@ def resolve_files_to_modules(file_paths: list) -> dict:
                     if len(found) >= 3:
                         break
 
+        # 4: direct path→module conversion (zero-config fallback)
+        # Convert file path to dot-notation: serve/retrieval_engine.py → serve.retrieval_engine
+        if not found:
+            p = pathlib.PurePosixPath(fp_norm)
+            if p.suffix in (".py", ".hs", ".rs", ".js", ".ts", ".tsx", ".jsx", ".go", ".java", ".groovy"):
+                dot_mod = str(p.with_suffix("")).replace("/", ".")
+                found.append(dot_mod)
+
         result[fp] = found
     return result
 
@@ -1250,10 +1258,11 @@ def _build_bm25_index():
         ids.append(nid)
         svcs.append(d.get("service", "unknown"))
         data.append({**d, "id": nid})
-    _bm25      = _BM25Okapi(corpus)
-    _bm25_ids  = ids
-    _bm25_svcs = svcs
-    _bm25_data = data
+    if corpus:
+        _bm25      = _BM25Okapi(corpus)
+        _bm25_ids  = ids
+        _bm25_svcs = svcs
+        _bm25_data = data
     print(f"  BM25 index: {len(ids):,} symbols")
 
 

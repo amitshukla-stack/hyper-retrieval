@@ -858,11 +858,98 @@ def get_blast_radius(module_names: list, max_hops: int = 2) -> dict:
 
     import_neighbors.sort(key=lambda x: (x["hop"], x["module"]))
 
+    # ── Tiered impact analysis ──────────────────────────────────────────
+    # Combines import + co-change + Granger into unified scored tiers:
+    #   will_break  — direct structural dependency (hop 1)
+    #   may_break   — transitive dependency OR strong Granger causal signal
+    #   review      — co-change only (no static link) or weak signals
+    tiered: dict = {}  # module → {tier, confidence, signals}
+    import_set = set()
+
+    for nb in import_neighbors:
+        mod = nb["module"]
+        import_set.add(mod)
+        hop = nb["hop"]
+        static_score = 1.0 / hop  # 1.0 for hop 1, 0.5 for hop 2, etc.
+
+        # Check for Granger causal evidence
+        granger_score = 0.0
+        granger_info = None
+        if granger_index:
+            for s in seed:
+                cc_s = _resolve_cc(s)
+                cc_t = _resolve_cc(mod)
+                for key in (f"{cc_s}→{cc_t}", f"{cc_t}→{cc_s}"):
+                    if key in granger_index:
+                        g = granger_index[key]
+                        gs = 1.0 - min(g["p_value"] * 20, 1.0)  # p=0 → 1.0, p=0.05 → 0.0
+                        if gs > granger_score:
+                            granger_score = gs
+                            granger_info = {"lag": g["best_lag"], "p_value": g["p_value"]}
+
+        confidence = round(0.5 * static_score + 0.3 * granger_score + 0.2, 3)
+        tier = "will_break" if hop == 1 else "may_break"
+
+        tiered[mod] = {
+            "module": mod, "tier": tier, "confidence": confidence,
+            "service": nb.get("service", ""),
+            "signals": {"static_hop": hop, "direction": nb["direction"]},
+        }
+        if granger_info:
+            tiered[mod]["signals"]["granger"] = granger_info
+
+    for nb in cochange_neighbors:
+        mod = nb["module"]
+        cc_weight = nb.get("weight", 0)
+        max_w = max((n.get("weight", 1) for n in cochange_neighbors), default=1)
+        cc_score = min(cc_weight / max(max_w, 1), 1.0)
+
+        granger_score = 0.0
+        granger_info = None
+        if granger_index:
+            for s in seed:
+                cc_s = _resolve_cc(s)
+                cc_t = _resolve_cc(mod)
+                for key in (f"{cc_s}→{cc_t}", f"{cc_t}→{cc_s}"):
+                    if key in granger_index:
+                        g = granger_index[key]
+                        gs = 1.0 - min(g["p_value"] * 20, 1.0)
+                        if gs > granger_score:
+                            granger_score = gs
+                            granger_info = {"lag": g["best_lag"], "p_value": g["p_value"]}
+
+        if mod in tiered:
+            # Already in import graph — boost confidence with co-change evidence
+            existing = tiered[mod]
+            cc_boost = 0.15 * cc_score + 0.1 * granger_score
+            existing["confidence"] = round(min(1.0, existing["confidence"] + cc_boost), 3)
+            existing["signals"]["cochange_weight"] = cc_weight
+            if granger_info and "granger" not in existing["signals"]:
+                existing["signals"]["granger"] = granger_info
+        else:
+            # Co-change only — no static dependency
+            confidence = round(0.4 * cc_score + 0.4 * granger_score + 0.1, 3)
+            tier = "may_break" if granger_score > 0.5 else "review"
+            svc = ""
+            if MG is not None and mod in MG.nodes:
+                svc = MG.nodes[mod].get("service", "")
+            tiered[mod] = {
+                "module": mod, "tier": tier, "confidence": confidence,
+                "service": svc,
+                "signals": {"cochange_weight": cc_weight},
+            }
+            if granger_info:
+                tiered[mod]["signals"]["granger"] = granger_info
+
+    tiered_list = sorted(tiered.values(), key=lambda x: -x["confidence"])
+    # ── End tiered impact ───────────────────────────────────────────────
+
     return {
         "seed_modules":       seed,
         "import_neighbors":   import_neighbors,
         "cochange_neighbors": cochange_neighbors,
         "affected_services":  sorted(affected_services),
+        "tiered_impact":      tiered_list,
     }
 
 

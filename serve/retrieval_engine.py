@@ -54,6 +54,7 @@ reranker:      object = None   # CrossEncoder — disabled (kept for reference)
 cluster_summaries:   dict  = {}
 cochange_index:      dict  = {}
 ownership_index:     dict  = {}   # module → [{"email","name","commits"}, ...]
+granger_index:       dict  = {}   # "A→B" → {"source","target","best_lag","p_value","f_statistic"}
 file_to_nodes:       dict  = {}   # module_name → [node_id, ...]
 filepath_to_module:  dict  = {}   # relative_file_path → module_name
 _cochange_loaded_at: float = 0.0
@@ -384,6 +385,16 @@ def initialize(
             meta_oi = oi.get("meta", {})
             print(f"  {meta_oi.get('total_modules',0):,} modules  "
                   f"{meta_oi.get('total_unique_authors',0):,} authors")
+
+        granger_path = artifact_dir / "granger_index.json"
+        if granger_path.exists():
+            print("Loading Granger causality index...")
+            with open(str(granger_path)) as _f:
+                gi = json.load(_f)
+            granger_index.update(gi.get("causal_pairs", {}))
+            meta_gi = gi.get("metadata", {})
+            print(f"  {meta_gi.get('significant_results', 0):,} causal pairs  "
+                  f"(p<{meta_gi.get('p_threshold', 0.05)})")
 
         # Inject synthetic co-change edges from call_graph (cold-start fix)
         if call_graph and cochange_index is not None:
@@ -863,6 +874,31 @@ def predict_missing_changes(changed_modules: list, min_weight: int = 5,
         # Normalize confidence: multiple sources + high weight = high confidence
         confidence = min(1.0, (ev["total_weight"] / 50) * (source_count / len(changed_set)))
 
+        # Granger causality boost: if any changed module causally predicts this candidate
+        causal_info = None
+        if granger_index:
+            best_causal = None
+            for src in ev["sources"]:
+                cc_src = _resolve_cc(src["from"])
+                cc_tgt = _resolve_cc(mod)
+                key = f"{cc_src}→{cc_tgt}"
+                if key in granger_index:
+                    g = granger_index[key]
+                    if best_causal is None or g["p_value"] < best_causal["p_value"]:
+                        best_causal = g
+            if best_causal:
+                causal_info = {
+                    "direction": f"{best_causal['source'].split('::')[-1]}→{best_causal['target'].split('::')[-1]}",
+                    "lag": best_causal["best_lag"],
+                    "p_value": best_causal["p_value"],
+                    "strength": "strong" if best_causal["p_value"] < 0.01 else "moderate",
+                }
+                # Boost confidence for causal relationships
+                if best_causal["p_value"] < 0.01:
+                    confidence = min(1.0, confidence * 1.3)  # 30% boost for strong causal
+                else:
+                    confidence = min(1.0, confidence * 1.15)  # 15% boost for moderate
+
         svc = ""
         if MG is not None and mod in MG.nodes:
             svc = MG.nodes[mod].get("service", "")
@@ -874,15 +910,21 @@ def predict_missing_changes(changed_modules: list, min_weight: int = 5,
         else:
             reason = (f"co-changes with {source_count} changed modules "
                       f"(strongest: {top_source['from']}, w={top_source['weight']})")
+        if causal_info:
+            reason += f" [causal: {causal_info['direction']}, lag={causal_info['lag']}]"
 
-        predictions.append({
+        pred = {
             "module": mod,
             "reason": reason,
             "weight": ev["total_weight"],
             "confidence": round(confidence, 3),
             "service": svc,
             "source_count": source_count,
-        })
+        }
+        if causal_info:
+            pred["causal"] = causal_info
+
+        predictions.append(pred)
 
     predictions.sort(key=lambda x: (-x["confidence"], -x["weight"]))
     predictions = predictions[:top_k]

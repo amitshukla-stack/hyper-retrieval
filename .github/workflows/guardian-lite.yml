@@ -1,0 +1,313 @@
+# ============================================================================
+# Guardian Lite — Zero-Config PR Guardian for ANY Repository
+# ============================================================================
+#
+# What it does:
+#   1. Builds co-change + ownership indexes from git history (cached)
+#   2. Analyzes every PR for blast radius, missing co-changes, risk score
+#   3. Posts a Guardian report as a PR comment
+#   4. Optionally blocks PRs above a risk threshold
+#
+# Setup: Copy this file to .github/workflows/guardian-lite.yml — done.
+#
+# Configuration (all optional, via repo Settings > Variables):
+#   GUARDIAN_BLOCKING       - "true" to fail PRs that exceed risk threshold
+#   GUARDIAN_RISK_THRESHOLD - 0-100, default 0 (only blocks on FAIL verdict)
+#   GUARDIAN_REBUILD_CRON   - cron for weekly index rebuild (default: Sunday 3am)
+#
+# No secrets needed for public repos. Uses GITHUB_TOKEN for PR comments.
+# ============================================================================
+
+name: Guardian Lite
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+  # Weekly rebuild of indexes to capture new git history
+  schedule:
+    - cron: '0 3 * * 0'  # Sunday 3am UTC
+
+  # Manual trigger for first-time setup or forced rebuild
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild of Guardian indexes'
+        type: boolean
+        default: false
+
+permissions:
+  pull-requests: write
+  contents: read
+
+env:
+  HYPERRETRIEVAL_VERSION: 'main'
+  ARTIFACT_DIR: '.hyperretrieval/artifacts'
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  # ── Job 1: Build or restore indexes ──────────────────────────────────────
+  build-indexes:
+    runs-on: ubuntu-latest
+    outputs:
+      cache-hit: ${{ steps.cache-indexes.outputs.cache-hit }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for co-change analysis
+
+      # Generate a cache key from the git history shape.
+      # Changes when commit count crosses a 50-commit boundary, forcing rebuild.
+      - name: Compute history hash
+        id: history-hash
+        run: |
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          # Bucket by 50 commits — rebuild when history grows significantly
+          BUCKET=$(( COMMIT_COUNT / 50 ))
+          HASH=$(echo "${BUCKET}-$(git log --format='%H' -1)" | sha256sum | cut -c1-16)
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "commit_count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+          echo "History: $COMMIT_COUNT commits, bucket $BUCKET, hash $HASH"
+
+      - name: Restore cached indexes
+        id: cache-indexes
+        uses: actions/cache@v4
+        with:
+          path: |
+            .hyperretrieval/artifacts/cochange_index.json
+            .hyperretrieval/artifacts/ownership_index.json
+            .hyperretrieval/git_history.json
+          key: guardian-indexes-${{ steps.history-hash.outputs.hash }}
+          restore-keys: |
+            guardian-indexes-
+
+      - name: Set up Python
+        if: steps.cache-indexes.outputs.cache-hit != 'true' || github.event.inputs.force_rebuild == 'true' || github.event_name == 'schedule'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install build dependencies
+        if: steps.cache-indexes.outputs.cache-hit != 'true' || github.event.inputs.force_rebuild == 'true' || github.event_name == 'schedule'
+        run: pip install networkx pyyaml
+
+      - name: Checkout HyperRetrieval
+        if: steps.cache-indexes.outputs.cache-hit != 'true' || github.event.inputs.force_rebuild == 'true' || github.event_name == 'schedule'
+        uses: actions/checkout@v4
+        with:
+          repository: amitshukla-stack/hyper-retrieval
+          ref: ${{ env.HYPERRETRIEVAL_VERSION }}
+          path: .hyperretrieval-src
+
+      - name: Build Guardian indexes
+        if: steps.cache-indexes.outputs.cache-hit != 'true' || github.event.inputs.force_rebuild == 'true' || github.event_name == 'schedule'
+        run: |
+          echo "::group::Building Guardian indexes from ${{ steps.history-hash.outputs.commit_count }} commits"
+          python3 .hyperretrieval-src/apps/cli/guardian_init.py \
+            --repo . \
+            --artifact-dir "${{ env.ARTIFACT_DIR }}" \
+            --rebuild
+          echo "::endgroup::"
+
+          # Verify outputs exist
+          echo "Built artifacts:"
+          ls -lh "${{ env.ARTIFACT_DIR }}/cochange_index.json" "${{ env.ARTIFACT_DIR }}/ownership_index.json" .hyperretrieval/git_history.json 2>/dev/null || true
+
+      # Upload as artifact so the analyze job can use it
+      - name: Upload indexes
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardian-indexes
+          path: |
+            .hyperretrieval/artifacts/cochange_index.json
+            .hyperretrieval/artifacts/ownership_index.json
+            .hyperretrieval/git_history.json
+          retention-days: 30
+
+  # ── Job 2: Analyze PR ────────────────────────────────────────────────────
+  analyze-pr:
+    runs-on: ubuntu-latest
+    needs: build-indexes
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download indexes
+        uses: actions/download-artifact@v4
+        with:
+          name: guardian-indexes
+          path: .hyperretrieval
+
+      - name: Checkout HyperRetrieval
+        uses: actions/checkout@v4
+        with:
+          repository: amitshukla-stack/hyper-retrieval
+          ref: ${{ env.HYPERRETRIEVAL_VERSION }}
+          path: .hyperretrieval-src
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install analysis dependencies
+        run: pip install networkx pyyaml lancedb pyarrow rank-bm25 ijson
+
+      - name: Get changed files
+        id: changed
+        run: |
+          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }} | tr '\n' ' ')
+          COUNT=$(echo "$FILES" | wc -w)
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "Changed files ($COUNT): $FILES"
+
+      - name: Skip if no files changed
+        if: steps.changed.outputs.count == '0'
+        run: echo "No files changed, skipping analysis"
+
+      - name: Run Guardian analysis (Markdown)
+        if: steps.changed.outputs.count != '0'
+        id: guardian-md
+        continue-on-error: true
+        run: |
+          # Auto-detect rules file
+          RULES_ARG=""
+          if [ -f "guardian_rules.yaml" ]; then
+            RULES_ARG="--rules guardian_rules.yaml"
+          fi
+
+          REPORT=$(python3 .hyperretrieval-src/apps/cli/pr_analyzer.py \
+            --mode guardian \
+            --artifact-dir "${{ env.ARTIFACT_DIR }}" \
+            $RULES_ARG \
+            --files ${{ steps.changed.outputs.files }} \
+            2>/dev/null) || true
+
+          echo "$REPORT" > /tmp/guardian_report.md
+          echo "Generated Markdown report ($(wc -c < /tmp/guardian_report.md) bytes)"
+
+      - name: Run Guardian analysis (JSON)
+        if: steps.changed.outputs.count != '0'
+        id: guardian-json
+        continue-on-error: true
+        run: |
+          RULES_ARG=""
+          if [ -f "guardian_rules.yaml" ]; then
+            RULES_ARG="--rules guardian_rules.yaml"
+          fi
+
+          python3 .hyperretrieval-src/apps/cli/pr_analyzer.py \
+            --mode guardian \
+            --format json \
+            --artifact-dir "${{ env.ARTIFACT_DIR }}" \
+            $RULES_ARG \
+            --files ${{ steps.changed.outputs.files }} \
+            2>/dev/null > /tmp/guardian_report.json || true
+
+          echo "Generated JSON report ($(wc -c < /tmp/guardian_report.json) bytes)"
+
+      - name: Post PR comment
+        if: steps.changed.outputs.count != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Read both reports
+            let mdReport = '';
+            let jsonReport = '';
+            try { mdReport = fs.readFileSync('/tmp/guardian_report.md', 'utf8').trim(); } catch {}
+            try { jsonReport = fs.readFileSync('/tmp/guardian_report.json', 'utf8').trim(); } catch {}
+
+            if (!mdReport) {
+              console.log('No Guardian report generated — indexes may still be building');
+              return;
+            }
+
+            // Build comment body with both text and collapsible JSON
+            let body = `### Guardian Analysis\n\n${mdReport}`;
+
+            if (jsonReport) {
+              body += `\n\n<details>\n<summary>Raw JSON report</summary>\n\n\`\`\`json\n${jsonReport}\n\`\`\`\n\n</details>`;
+            }
+
+            body += `\n\n---\n_Powered by [HyperRetrieval](https://github.com/amitshukla-stack/hyper-retrieval) Guardian Lite_`;
+
+            // Upsert: update existing comment or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c =>
+              c.body.includes('Guardian Analysis') &&
+              c.user.type === 'Bot'
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              console.log(`Updated existing Guardian comment #${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+              console.log('Created new Guardian comment');
+            }
+
+      # ── Blocking gate ────────────────────────────────────────────────────
+      - name: Check verdict (blocking mode)
+        if: steps.changed.outputs.count != '0'
+        env:
+          GUARDIAN_BLOCKING: ${{ vars.GUARDIAN_BLOCKING || 'false' }}
+          GUARDIAN_RISK_THRESHOLD: ${{ vars.GUARDIAN_RISK_THRESHOLD || '0' }}
+        run: |
+          if [ "$GUARDIAN_BLOCKING" != "true" ]; then
+            echo "Blocking mode disabled — skipping verdict check"
+            exit 0
+          fi
+
+          if [ ! -f /tmp/guardian_report.json ]; then
+            echo "No JSON report — cannot check verdict"
+            exit 0
+          fi
+
+          python3 -c "
+          import json, sys, os
+
+          with open('/tmp/guardian_report.json') as f:
+              d = json.load(f)
+
+          status = d.get('verdict', {}).get('status', 'PASS')
+          risk_score = d.get('risk', {}).get('risk_score', 0)
+          threshold = int(os.environ.get('GUARDIAN_RISK_THRESHOLD', '0'))
+
+          print(f'Verdict: {status} | Risk: {risk_score}/100 | Threshold: {threshold}')
+
+          if status == 'FAIL':
+              print('::error::Guardian verdict: FAIL — PR is likely incomplete (missing co-changed files)')
+              sys.exit(1)
+
+          if threshold > 0 and risk_score >= threshold:
+              print(f'::error::Risk score {risk_score}/100 exceeds threshold {threshold}')
+              sys.exit(1)
+
+          print('Guardian check passed')
+          "

@@ -307,6 +307,28 @@ def get_blast_radius(files_or_modules: list[str], max_hops: int = 2) -> str:
         for n in result["cochange_neighbors"][:15]:
             lines.append(f"  hop={n['hop']} weight={n['weight']} {n['module']}")
 
+    tiered = result.get("tiered_impact", [])
+    if tiered:
+        lines.append(f"\n### Tiered Impact Summary ({len(tiered)} total)")
+        for tier_name, emoji in [("will_break", "!"), ("may_break", "?"), ("review", "~")]:
+            tier_items = [t for t in tiered if t["tier"] == tier_name]
+            if tier_items:
+                lines.append(f"\n  [{emoji}] {tier_name.upper()} ({len(tier_items)} modules)")
+                for t in tier_items[:10]:
+                    sigs = t.get("signals", {})
+                    parts = [f"conf={t['confidence']:.2f}"]
+                    if "static_hop" in sigs:
+                        parts.append(f"hop={sigs['static_hop']}")
+                    if "cochange_weight" in sigs:
+                        parts.append(f"cc={sigs['cochange_weight']}")
+                    if "granger" in sigs:
+                        g = sigs["granger"]
+                        parts.append(f"granger(lag={g['lag']},p={g['p_value']:.4f})")
+                    svc = f" [{t['service']}]" if t.get("service") else ""
+                    lines.append(f"    {t['module']}{svc} ({', '.join(parts)})")
+                if len(tier_items) > 10:
+                    lines.append(f"    ... and {len(tier_items) - 10} more")
+
     return "\n".join(lines)
 
 
@@ -436,6 +458,13 @@ def check_my_changes(changed_files: list[str]) -> str:
     lines.append(f"- **Import neighbors:** {len(blast['import_neighbors'])}")
     lines.append(f"- **Co-change neighbors:** {len(blast['cochange_neighbors'])}")
     lines.append(f"- **PR completeness:** {coverage:.0%}")
+
+    tiered = blast.get("tiered_impact", [])
+    if tiered:
+        wb = [t for t in tiered if t["tier"] == "will_break"]
+        mb = [t for t in tiered if t["tier"] == "may_break"]
+        rv = [t for t in tiered if t["tier"] == "review"]
+        lines.append(f"- **Impact tiers:** {len(wb)} will-break, {len(mb)} may-break, {len(rv)} review")
 
     if predictions[:5]:
         lines.append("\n### Likely Missing")

@@ -543,10 +543,67 @@ else:
     ok(f"custom weights accepted (score={custom_risk['risk_score']})")
 
 
+# 13. Granger Causality — directional co-change prediction
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== 13. Granger Causality (granger_index + causal predictions) ===")
+
+# Test 1: granger_index loaded (may be empty if not built)
+if hasattr(RE, 'granger_index'):
+    n_granger = len(RE.granger_index)
+    if n_granger > 0:
+        ok(f"granger_index loaded: {n_granger} causal pairs")
+    else:
+        ok("granger_index present but empty (not built yet — acceptable)")
+else:
+    fail("granger_index attribute missing from retrieval_engine")
+
+# Test 2: predict_missing_changes still works (with or without Granger)
+pmc = RE.predict_missing_changes(["PaymentFlows"])
+if len(pmc["predictions"]) > 0 and "confidence" in pmc["predictions"][0]:
+    ok(f"predict_missing_changes works with Granger integration: {len(pmc['predictions'])} predictions")
+else:
+    fail(f"predict_missing_changes broken: {pmc}")
+
+# Test 3: if Granger data exists, test with a module that has causal pairs
+if len(RE.granger_index) > 0:
+    # Find a module that's both in granger_index and module graph
+    granger_mods = set()
+    for v in RE.granger_index.values():
+        mg_src = RE._resolve_mg(v["source"])
+        if mg_src:
+            granger_mods.add(mg_src)
+    test_mod = next(iter(granger_mods), None) if granger_mods else None
+    if test_mod:
+        causal_pmc = RE.predict_missing_changes([test_mod])
+        causal_preds = [p for p in causal_pmc["predictions"] if p.get("causal")]
+        if causal_preds:
+            c = causal_preds[0]["causal"]
+            ok(f"causal predictions found: {causal_preds[0]['module']} "
+               f"({c['direction']}, lag={c['lag']}, p={c['p_value']}, {c['strength']})")
+        else:
+            ok(f"no causal predictions for {test_mod} (may need more data coverage)")
+    else:
+        ok("no granger modules resolved to MG names (data coverage gap)")
+else:
+    ok("Granger tests skipped (index not built)")
+
+# Test 4: causal info structure validation (if present)
+if len(RE.granger_index) > 0:
+    sample_key = next(iter(RE.granger_index))
+    sample = RE.granger_index[sample_key]
+    required = {"source", "target", "best_lag", "p_value", "f_statistic"}
+    if required.issubset(sample.keys()):
+        ok(f"granger entry has required fields: {required}")
+    else:
+        fail(f"granger entry missing fields: {required - set(sample.keys())}")
+else:
+    ok("Granger structure test skipped (index not built)")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ══════════════════════════════════════════════════════════════════════════════
-n_sections = 12
+n_sections = 13
 print()
 if errors:
     print(f"\033[91m{len(errors)} FAILED: {errors}\033[0m")

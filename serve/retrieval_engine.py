@@ -57,6 +57,7 @@ ownership_index:     dict  = {}   # module → [{"email","name","commits"}, ...]
 granger_index:       dict  = {}   # "A→B" → {"source","target","best_lag","p_value","f_statistic"}
 community_index:     dict  = {}   # community_id → {"size","services","label","cross_service"}
 module_to_community: dict  = {}   # module_cc_key → community_id
+activity_index:      dict  = {}   # module_name → {"activity_score", "activity_50", "activity_200"}
 file_to_nodes:       dict  = {}   # module_name → [node_id, ...]
 filepath_to_module:  dict  = {}   # relative_file_path → module_name
 _cochange_loaded_at: float = 0.0
@@ -461,6 +462,14 @@ def initialize(
             print(f"  {meta_ci.get('n_communities', 0)} communities  "
                   f"{meta_ci.get('cross_service_communities', 0)} cross-service  "
                   f"modularity={meta_ci.get('modularity', 0)}")
+
+        # Load activity index (from 10_build_activity.py)
+        activity_path = artifact_dir / "activity_index.json"
+        if activity_path.exists():
+            print("Loading activity index...")
+            with open(str(activity_path)) as _f:
+                activity_index.update(json.load(_f))
+            print(f"  {len(activity_index)} modules with activity data")
 
         # Inject synthetic co-change edges from call_graph (cold-start fix)
         if call_graph and cochange_index is not None:
@@ -943,7 +952,10 @@ def get_blast_radius(module_names: list, max_hops: int = 2) -> dict:
                             granger_score = gs
                             granger_info = {"lag": g["best_lag"], "p_value": g["p_value"]}
 
-        confidence = round(0.5 * static_score + 0.3 * granger_score + 0.2, 3)
+        # Activity boost: recently changed modules are more likely to be affected
+        act_score = activity_index.get(mod, {}).get("activity_score", 0.0)
+
+        confidence = round(0.4 * static_score + 0.25 * granger_score + 0.2 * act_score + 0.15, 3)
         tier = "will_break" if hop == 1 else "may_break"
 
         tiered[mod] = {
@@ -951,6 +963,8 @@ def get_blast_radius(module_names: list, max_hops: int = 2) -> dict:
             "service": nb.get("service", ""),
             "signals": {"static_hop": hop, "direction": nb["direction"]},
         }
+        if act_score > 0:
+            tiered[mod]["signals"]["activity_score"] = round(act_score, 3)
         if granger_info:
             tiered[mod]["signals"]["granger"] = granger_info
 
@@ -975,17 +989,21 @@ def get_blast_radius(module_names: list, max_hops: int = 2) -> dict:
                             granger_info = {"lag": g["best_lag"], "p_value": g["p_value"]}
 
         if mod in tiered:
-            # Already in import graph — boost confidence with co-change evidence
+            # Already in import graph — boost confidence with co-change + activity evidence
             existing = tiered[mod]
-            cc_boost = 0.15 * cc_score + 0.1 * granger_score
+            act_score = activity_index.get(mod, {}).get("activity_score", 0.0)
+            cc_boost = 0.12 * cc_score + 0.08 * granger_score + 0.1 * act_score
             existing["confidence"] = round(min(1.0, existing["confidence"] + cc_boost), 3)
             existing["signals"]["cochange_weight"] = cc_weight
+            if act_score > 0:
+                existing["signals"]["activity_score"] = round(act_score, 3)
             if granger_info and "granger" not in existing["signals"]:
                 existing["signals"]["granger"] = granger_info
         else:
             # Co-change only — no static dependency
-            confidence = round(0.4 * cc_score + 0.4 * granger_score + 0.1, 3)
-            tier = "may_break" if granger_score > 0.5 else "review"
+            act_score = activity_index.get(mod, {}).get("activity_score", 0.0)
+            confidence = round(0.3 * cc_score + 0.3 * granger_score + 0.3 * act_score + 0.1, 3)
+            tier = "may_break" if granger_score > 0.5 or act_score > 0.5 else "review"
             svc = ""
             if MG is not None and mod in MG.nodes:
                 svc = MG.nodes[mod].get("service", "")
@@ -994,6 +1012,8 @@ def get_blast_radius(module_names: list, max_hops: int = 2) -> dict:
                 "service": svc,
                 "signals": {"cochange_weight": cc_weight},
             }
+            if act_score > 0:
+                tiered[mod]["signals"]["activity_score"] = round(act_score, 3)
             if granger_info:
                 tiered[mod]["signals"]["granger"] = granger_info
 

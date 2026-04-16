@@ -611,6 +611,117 @@ def score_change_risk(changed_files: list[str], weights: dict | None = None) -> 
 
 
 @mcp.tool()
+def check_criticality(modules: list[str]) -> str:
+    """
+    Check the criticality score of one or more modules.
+
+    Returns a risk assessment based on 7 signals: blast radius, cross-repo
+    coupling, change frequency, author concentration, recency, Granger
+    causal influence, and revert history. Scores range from 0 (low risk)
+    to 1 (highest risk).
+
+    Use this BEFORE changing critical code to understand the risk.
+
+    Examples:
+      check_criticality(["Transaction", "TenantConfig"])
+      check_criticality(["PaymentFlows"])
+    """
+    result = RE.check_criticality(modules)
+    lines = ["## Criticality Assessment\n"]
+    for mod, data in result.items():
+        level = data.get("risk_level", "UNKNOWN")
+        score = data.get("score", 0)
+        icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(level, "⚪")
+        lines.append(f"### {icon} {mod} — {level} ({score:.3f})\n")
+        if data.get("rank"):
+            lines.append(f"Rank: #{data['rank']} of all modules\n")
+        if data.get("reasons"):
+            lines.append("**Key signals:**")
+            for r in data["reasons"]:
+                lines.append(f"- {r}")
+        signals = data.get("signals", {})
+        if signals:
+            lines.append("\n| Signal | Score |")
+            lines.append("|--------|-------|")
+            for sig, val in sorted(signals.items(), key=lambda x: -x[1]):
+                lines.append(f"| {sig.replace('_', ' ').title()} | {val:.2f} |")
+        lines.append("")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_guardrails(modules: list[str]) -> str:
+    """
+    Get guardrail documents for critical modules.
+
+    Guardrails are auto-generated protective rules that explain:
+    - Why this code is critical
+    - What invariant must stay true
+    - What breaks if you change it
+    - Who should review changes
+
+    If a module has a guardrail, returns the full document.
+    If not, returns the criticality score and a note.
+
+    Use this when reviewing PRs that touch critical code.
+
+    Examples:
+      get_guardrails(["Transaction"])
+      get_guardrails(["CardInfo", "CryptoUtils"])
+    """
+    result = RE.get_guardrails(modules)
+    lines = ["## Guardrails\n"]
+    for mod, data in result.items():
+        if data.get("has_guardrail") and data.get("content"):
+            lines.append(data["content"])
+        else:
+            lines.append(f"### {mod}\n")
+            lines.append(f"No guardrail generated. {data.get('note', '')}\n")
+        lines.append("---\n")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def list_critical_modules(
+    service: str = None,
+    threshold: float = 0.5,
+    top_k: int = 20,
+) -> str:
+    """
+    List the most critical modules in the codebase, ranked by risk.
+
+    Criticality is computed from blast radius, co-change coupling, author
+    concentration, change frequency, Granger causality, and revert history.
+    No domain knowledge needed — works on any codebase.
+
+    Use this to understand where the landmines are before major refactors,
+    during onboarding, or when planning code reviews.
+
+    Args:
+      service: Filter by service name (e.g., "euler-api-txns")
+      threshold: Minimum criticality score (0-1, default 0.5)
+      top_k: Number of results (default 20)
+
+    Examples:
+      list_critical_modules()
+      list_critical_modules(service="euler-api-gateway", threshold=0.4)
+    """
+    result = RE.list_critical_modules(service=service, threshold=threshold, top_k=top_k)
+    lines = [f"## Critical Modules ({result['total_above_threshold']} above threshold {threshold})\n"]
+    if result.get("service_filter"):
+        lines.append(f"Filtered by service: {result['service_filter']}\n")
+
+    lines.append("| Rank | Module | Score | Risk | Guardrail |")
+    lines.append("|------|--------|-------|------|-----------|")
+    for m in result.get("modules", []):
+        mod_short = m["module"].split("::")[-1][:40] if "::" in m["module"] else m["module"][:40]
+        gr = "Yes" if m.get("has_guardrail") else "—"
+        lines.append(f"| #{m.get('rank', '?')} | {mod_short} | {m['score']:.3f} | {m['risk_level']} | {gr} |")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def get_context(
     query: str,
     persona: str = "default",

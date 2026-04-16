@@ -320,13 +320,34 @@ def initialize(
         print(f"  {_mg.number_of_nodes():,} modules  {_mg.number_of_edges():,} import edges  {cs_edges:,} cross-service")
 
         print("Loading vector index...")
-        try:
-            db = lancedb.connect(LANCE_PATH)
-            lance_tbl = db.open_table("chunks")
-            print(f"  {len(lance_tbl):,} vectors @ 4096d")
-        except (ValueError, FileNotFoundError, OSError) as e:
-            lance_tbl = None
-            print(f"  vectors.lance: not available ({e}) — keyword-only mode")
+        USE_QUANTIZED = os.environ.get("USE_QUANTIZED", "").lower() in ("1", "true", "yes")
+        QUANT_PATH = str(artifact_dir / "vectors_quantized.npz")
+
+        if USE_QUANTIZED and os.path.exists(QUANT_PATH):
+            try:
+                from quantized_loader import QuantizedSearchTable
+                # Load metadata from LanceDB for field lookups, then use quantized vectors
+                _meta_df = None
+                try:
+                    _meta_db = lancedb.connect(LANCE_PATH)
+                    _meta_tbl = _meta_db.open_table("chunks")
+                    _meta_df = _meta_tbl.to_pandas().drop(columns=["vector"], errors="ignore")
+                    print(f"  Metadata loaded from LanceDB ({len(_meta_df):,} rows)")
+                except Exception:
+                    print("  WARNING: Could not load metadata from LanceDB — search results will lack field data")
+                lance_tbl = QuantizedSearchTable(QUANT_PATH, metadata_df=_meta_df)
+                print(f"  Using QUANTIZED vectors ({len(lance_tbl):,} @ {lance_tbl.dim}d, {lance_tbl.bits}-bit)")
+            except Exception as e:
+                lance_tbl = None
+                print(f"  Quantized load failed ({e}) — falling back to keyword-only mode")
+        else:
+            try:
+                db = lancedb.connect(LANCE_PATH)
+                lance_tbl = db.open_table("chunks")
+                print(f"  {len(lance_tbl):,} vectors @ 4096d")
+            except (ValueError, FileNotFoundError, OSError) as e:
+                lance_tbl = None
+                print(f"  vectors.lance: not available ({e}) — keyword-only mode")
 
         try:
             doc_db = lancedb.connect(str(artifact_dir.parent / "output"))

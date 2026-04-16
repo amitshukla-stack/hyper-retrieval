@@ -33,6 +33,9 @@ CLAUDE.md
 serve/demo_server_v6.py
 tools.py
 
+# Org-specific config (contains real employee emails — local only)
+config/author_aliases.yaml
+
 *.bak
 
 # Viz data files (org-specific, built locally)

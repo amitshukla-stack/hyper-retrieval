@@ -1,0 +1,43 @@
+{
+  "name": "hyperretrieval",
+  "displayName": "HyperRetrieval — Code Impact Intelligence",
+  "version": "0.1.0",
+  "description": "Blast radius analysis, missing change prediction, and reviewer suggestions powered by git history co-change patterns and Granger causality. Zero config — works on any repo.",
+  "author": "HyperRetrieval",
+  "license": "MIT",
+  "homepage": "https://github.com/amitshukla-stack/hyper-retrieval",
+  "categories": ["Code Analysis", "Developer Tools", "Code Review"],
+  "keywords": ["blast-radius", "co-change", "code-review", "impact-analysis", "pr-review"],
+
+  "mcpServers": {
+    "hyperretrieval": {
+      "command": "python3",
+      "args": ["${pluginDir}/server.py"],
+      "env": {
+        "HR_ARTIFACT_DIR": "${workspaceDir}/.hyperretrieval/artifacts"
+      }
+    }
+  },
+
+  "hooks": {
+    "onWorkspaceOpen": {
+      "command": "python3",
+      "args": ["${pluginDir}/init.py", "--repo", "${workspaceDir}"],
+      "description": "Auto-index repo on workspace open (git history only, <5s)"
+    }
+  },
+
+  "skills": [
+    {
+      "name": "analyze-pr",
+      "description": "Analyze the impact of current changes — blast radius, missing files, suggested reviewers",
+      "prompt": "Use the get_blast_radius and predict_missing_changes tools to analyze the currently staged or changed files. Show tiered impact (will_break/may_break/review) and suggest reviewers."
+    }
+  ],
+
+  "rules": [
+    "When reviewing code changes, always check blast radius before approving.",
+    "Use predict_missing_changes to catch files that typically change together.",
+    "Use suggest_reviewers to find the right people for code review."
+  ]
+}

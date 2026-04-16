@@ -52,14 +52,10 @@ import retrieval_engine as RE
 _DEFAULT_SYSTEM_PROMPT = """
 You are Codebase Expert — an interactive AI assistant embedded in your organisation's codebase. You help engineers understand, trace, debug, and reason about code across services using a set of retrieval tools.
 
-## Service architecture (authoritative — never invent or deviate)
+## Service architecture
 
-- `euler-api-txns` — core payment orchestrator; drives the full transaction lifecycle
-- `euler-api-order` — order creation and routing; calls `euler-api-txns`, NOT gateways directly
-- `euler-api-gateway` (Haskell) / `UCS` (Rust) — connector-aggregation layers; translate internal payment requests to gateway-specific API calls; called BY `euler-api-txns`
-- `euler-api-pre-txn` — pre-transaction operations: eligibility, offers, EMI, surcharges
-- `euler-db` — canonical shared type definitions (library, not a runtime service)
-- Canonical call chain: `euler-api-order` → `euler-api-txns` → [`euler-api-gateway` | `UCS`] → external gateway
+Service architecture is derived from the indexed codebase. Use `search_modules` and `get_module` to discover
+the actual service topology — never invent or assume service names or call chains.
 
 ## Tone and style
 
@@ -116,9 +112,9 @@ DIAGRAM: If your answer involves a sequential flow, a decision tree, or cross-se
 
 ```mermaid
 flowchart LR
-    A[euler-api-txns<br/>functionName] --> B{Decision Point}
-    B -->|UPI Collect| C[euler-api-gateway<br/>handleUpiCollect]
-    B -->|UPI Intent| D[UCS<br/>determine_upi_flow]
+    A[ServiceA<br/>functionName] --> B{Decision Point}
+    B -->|Path 1| C[ServiceB<br/>handleRequest]
+    B -->|Path 2| D[ServiceC<br/>processFlow]
 ```
 
 Rules: `flowchart LR` for flows · `flowchart TD` for hierarchies · node labels as ServiceName<br/>functionName · edge labels as condition/data type · max 15 nodes · only nodes you can name from evidence.""".strip()
@@ -290,7 +286,7 @@ AGENT_TOOLS = [
             },
             "service": {
                 "type": "string",
-                "description": "Restrict search to a specific service name (e.g. 'euler-api-txns'). Omit to search all services."
+                "description": "Restrict search to a specific service name (e.g. 'api-gateway'). Omit to search all services."
             }
         }, "required": ["query"]}
     }},
@@ -298,13 +294,10 @@ AGENT_TOOLS = [
         "name": "search_docs",
         "description": (
             "Search indexed internal developer documentation.\n\n"
-            "IMPORTANT — current index contains ONLY internal Haskell library notes: "
-            "database layer (Beam ORM), caching layer, connection pooling, code style guides. "
-            "It does NOT contain payment flow docs, UPI specs, API contracts, gateway specs, "
-            "or merchant integration guides.\n\n"
-            "Use this ONLY when the question is specifically about the DB/ORM layer or caching "
-            "internals. Do NOT call this for payment protocol questions, UPI/EMI/mandate flows, "
-            "or gateway behaviour — use search_symbols and get_function_body instead."
+            "Searches indexed developer documentation (markdown files processed during build).\n\n"
+            "Use this when the question is about internal library usage, architecture notes, "
+            "or code style guides. For questions about specific code behaviour, "
+            "use search_symbols and get_function_body instead."
         ),
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"},
@@ -321,7 +314,7 @@ AGENT_TOOLS = [
             "- The question mentions a specific gateway name and involves auth, signing, or HMAC"
         ),
         "parameters": {"type": "object", "properties": {
-            "gateway_name": {"type": "string", "description": "Gateway name as it appears in the codebase (e.g. 'razorpay', 'payu', 'stripe')."}
+            "gateway_name": {"type": "string", "description": "Gateway or connector name as it appears in the codebase (e.g. 'stripe', 'adyen')."}
         }, "required": ["gateway_name"]}
     }},
     {"type": "function", "function": {
@@ -358,10 +351,10 @@ AGENT_TOOLS = [
             "List every symbol in a module namespace. Use after search_modules to see the full surface "
             "area before deciding what to read.\n\n"
             "Pass the exact module path returned by search_modules (dot notation).\n"
-            "Example: get_module('Euler.API.Gateway.Gateway.UPI')"
+            "Example: get_module('Auth.Middleware.JWT')"
         ),
         "parameters": {"type": "object", "properties": {
-            "module_name": {"type": "string", "description": "Module namespace path in dot notation (e.g. 'PaymentFlows', 'Euler.API.Gateway.Gateway.UPI')."},
+            "module_name": {"type": "string", "description": "Module namespace path in dot notation (e.g. 'Auth.Middleware.JWT')."},
             "service":     {"type": "string", "description": "Optional: restrict to a specific service."}
         }, "required": ["module_name"]}
     }},
@@ -427,21 +420,6 @@ AGENT_TOOLS = [
         }, "required": ["changed_files"]}
     }},
     {"type": "function", "function": {
-        "name": "check_my_changes",
-        "description": (
-            "SDLC Guardian: comprehensive PR review combining blast radius + missing changes "
-            "+ risk score + suggested reviewers in one call.\n\n"
-            "Returns a PASS/WARN/FAIL verdict with actionable details.\n\n"
-            "Use this when reviewing a PR or before submitting changes."
-        ),
-        "parameters": {"type": "object", "properties": {
-            "changed_files": {
-                "type": "array", "items": {"type": "string"},
-                "description": "List of changed file paths or module names."
-            }
-        }, "required": ["changed_files"]}
-    }},
-    {"type": "function", "function": {
         "name": "suggest_reviewers",
         "description": (
             "Suggest PR reviewers based on module ownership from git history.\n\n"
@@ -455,22 +433,6 @@ AGENT_TOOLS = [
             }
         }, "required": ["changed_files"]}
     }},
-    {"type": "function", "function": {
-        "name": "score_change_risk",
-        "description": (
-            "Compute a composite risk score (0-100) for a set of changes.\n\n"
-            "Components: blast radius scope, coverage gap (missing co-changes), "
-            "reviewer concentration (bus factor), service spread.\n\n"
-            "Returns: score, level (LOW/MEDIUM/HIGH/CRITICAL), breakdown per component."
-        ),
-        "parameters": {"type": "object", "properties": {
-            "changed_files": {
-                "type": "array", "items": {"type": "string"},
-                "description": "List of changed file paths or module names."
-            }
-        }, "required": ["changed_files"]}
-    }},
-
     # ── HyperCode coding tools ────────────────────────────────────────────────
     # Enabled when apps/cli/tools/ is importable (_CODING_TOOLS_AVAILABLE = True).
     # These allow the Chainlit chat + MCP server to read/write/edit files and run
@@ -679,7 +641,7 @@ def tool_trace_callees(fn_id: str, reason: str = "") -> str:
         return f"No callees found for '{target}'."
 
     # Derive the module prefix of the target so we can qualify short callee names
-    # e.g. "Euler.API.Gateway.Gateway.PayU.Routes.payuBaseUrl" → "Euler.API.Gateway.Gateway.PayU.Routes"
+    # e.g. "Auth.Middleware.JWT.verifyToken" → "Auth.Middleware.JWT"
     target_module = ".".join(target.split(".")[:-1]) if "." in target else ""
 
     # Build a name→id index for fast lookup — prefer same-module matches
@@ -1123,9 +1085,7 @@ TOOL_DISPATCH: dict = {
     "get_type_definition":   lambda a: tool_get_type_definition(a.get("type_name",""), a.get("service","")),
     # ── Guardian / PR analysis tools ──────────────────────────────────────────
     "predict_missing_changes": lambda a: _tool_guardian("predict", a.get("changed_files", []), a.get("min_confidence", 0.1)),
-    "check_my_changes":        lambda a: _tool_guardian("check", a.get("changed_files", [])),
     "suggest_reviewers":       lambda a: _tool_guardian("reviewers", a.get("changed_files", [])),
-    "score_change_risk":       lambda a: _tool_guardian("risk", a.get("changed_files", [])),
     # ── HyperCode coding tools (available when _CODING_TOOLS_AVAILABLE) ───────
     "run_bash":   lambda a: (
         _run_bash(a.get("command",""), a.get("timeout"), None)

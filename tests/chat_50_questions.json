@@ -1,0 +1,356 @@
+{
+  "version": "1.0",
+  "description": "50-question evaluation suite for HyperRetrieval chat app",
+  "questions": [
+    {
+      "id": 1,
+      "category": "search",
+      "question": "What modules handle UPI payments?",
+      "expected_tools": ["search_modules"],
+      "quality_criteria": "Should return modules related to UPI payment processing, not generic payment modules"
+    },
+    {
+      "id": 2,
+      "category": "search",
+      "question": "Find the authentication middleware",
+      "expected_tools": ["search_modules", "search_symbols"],
+      "quality_criteria": "Should identify auth/middleware modules across services"
+    },
+    {
+      "id": 3,
+      "category": "search",
+      "question": "Which modules deal with refund processing?",
+      "expected_tools": ["search_modules"],
+      "quality_criteria": "Should return refund-specific modules, not just generic payment modules"
+    },
+    {
+      "id": 4,
+      "category": "search",
+      "question": "Find all modules related to webhook handling",
+      "expected_tools": ["search_modules"],
+      "quality_criteria": "Should return webhook receiver, processor, and dispatcher modules"
+    },
+    {
+      "id": 5,
+      "category": "search",
+      "question": "Where is the database connection pool configured?",
+      "expected_tools": ["search_symbols", "search_modules"],
+      "quality_criteria": "Should locate connection pool setup in infrastructure/config modules"
+    },
+    {
+      "id": 6,
+      "category": "search",
+      "question": "Show me all the error types defined in the codebase",
+      "expected_tools": ["search_symbols"],
+      "quality_criteria": "Should return error type definitions, data constructors, or error enums"
+    },
+    {
+      "id": 7,
+      "category": "search",
+      "question": "What modules handle card payment tokenization?",
+      "expected_tools": ["search_modules"],
+      "quality_criteria": "Should find tokenization-specific modules, distinguishing from generic card processing"
+    },
+    {
+      "id": 8,
+      "category": "search",
+      "question": "Find the rate limiting logic",
+      "expected_tools": ["search_symbols", "search_modules"],
+      "quality_criteria": "Should identify rate limiter implementation and configuration modules"
+    },
+    {
+      "id": 9,
+      "category": "search",
+      "question": "Which services expose REST API endpoints?",
+      "expected_tools": ["search_modules"],
+      "quality_criteria": "Should list API handler modules across different microservices"
+    },
+    {
+      "id": 10,
+      "category": "search",
+      "question": "Find modules related to payment gateway integration",
+      "expected_tools": ["search_modules"],
+      "quality_criteria": "Should return gateway connector/adapter modules for various payment providers"
+    },
+    {
+      "id": 11,
+      "category": "understanding",
+      "question": "How does the order creation flow work end to end?",
+      "expected_tools": ["search_symbols", "get_function_body", "trace_callees"],
+      "quality_criteria": "Should trace the full order creation path from API handler to database persistence"
+    },
+    {
+      "id": 12,
+      "category": "understanding",
+      "question": "What does the payment status update handler do?",
+      "expected_tools": ["search_symbols", "get_function_body"],
+      "quality_criteria": "Should explain the status transition logic and side effects"
+    },
+    {
+      "id": 13,
+      "category": "understanding",
+      "question": "How does the retry logic work for failed gateway calls?",
+      "expected_tools": ["search_symbols", "get_function_body", "trace_callees"],
+      "quality_criteria": "Should explain retry strategy, backoff, and failure handling"
+    },
+    {
+      "id": 14,
+      "category": "understanding",
+      "question": "Explain the transaction locking mechanism",
+      "expected_tools": ["search_symbols", "get_function_body"],
+      "quality_criteria": "Should describe how concurrent transaction access is managed"
+    },
+    {
+      "id": 15,
+      "category": "understanding",
+      "question": "How are merchant credentials stored and retrieved?",
+      "expected_tools": ["search_modules", "search_symbols", "get_function_body"],
+      "quality_criteria": "Should explain credential storage pattern without exposing sensitive details"
+    },
+    {
+      "id": 16,
+      "category": "understanding",
+      "question": "What validations run before a payment is processed?",
+      "expected_tools": ["search_symbols", "get_function_body", "trace_callees"],
+      "quality_criteria": "Should list pre-processing validation steps in order"
+    },
+    {
+      "id": 17,
+      "category": "understanding",
+      "question": "How does the settlement reconciliation work?",
+      "expected_tools": ["search_modules", "get_function_body"],
+      "quality_criteria": "Should explain matching of gateway settlements with internal records"
+    },
+    {
+      "id": 18,
+      "category": "understanding",
+      "question": "What happens when a webhook callback is received from a payment gateway?",
+      "expected_tools": ["search_symbols", "get_function_body", "trace_callees"],
+      "quality_criteria": "Should trace webhook receipt through validation, processing, and status update"
+    },
+    {
+      "id": 19,
+      "category": "understanding",
+      "question": "How are idempotency keys used to prevent duplicate payments?",
+      "expected_tools": ["search_symbols", "get_function_body"],
+      "quality_criteria": "Should explain the idempotency check mechanism and storage"
+    },
+    {
+      "id": 20,
+      "category": "understanding",
+      "question": "What is the data flow from API request to database write for a new transaction?",
+      "expected_tools": ["search_symbols", "get_function_body", "trace_callees"],
+      "quality_criteria": "Should describe the full request pipeline including serialization, validation, and persistence"
+    },
+    {
+      "id": 21,
+      "category": "impact",
+      "question": "If I change the gateway routing logic, what else is affected?",
+      "expected_tools": ["get_blast_radius"],
+      "quality_criteria": "Should identify downstream services and modules that depend on routing decisions"
+    },
+    {
+      "id": 22,
+      "category": "impact",
+      "question": "What is the blast radius of changing the payment status enum?",
+      "expected_tools": ["get_blast_radius", "trace_callers"],
+      "quality_criteria": "Should show all modules that pattern-match or reference payment status values"
+    },
+    {
+      "id": 23,
+      "category": "impact",
+      "question": "If I modify the order data type, what tests and modules need updating?",
+      "expected_tools": ["get_blast_radius"],
+      "quality_criteria": "Should list all modules importing and using the order type"
+    },
+    {
+      "id": 24,
+      "category": "impact",
+      "question": "What files usually change together when the transaction processing module is modified?",
+      "expected_tools": ["predict_missing_changes"],
+      "quality_criteria": "Should identify co-change patterns from version history"
+    },
+    {
+      "id": 25,
+      "category": "impact",
+      "question": "I changed the database schema for the payments table. What code changes am I likely missing?",
+      "expected_tools": ["predict_missing_changes", "get_blast_radius"],
+      "quality_criteria": "Should identify ORM models, queries, and serialization code that reference the table"
+    },
+    {
+      "id": 26,
+      "category": "impact",
+      "question": "What is the impact of deprecating the legacy payment endpoint?",
+      "expected_tools": ["get_blast_radius", "trace_callers"],
+      "quality_criteria": "Should identify all callers and dependent integrations"
+    },
+    {
+      "id": 27,
+      "category": "impact",
+      "question": "If I refactor the merchant config module, which services will be affected?",
+      "expected_tools": ["get_blast_radius"],
+      "quality_criteria": "Should show cross-service dependency impact"
+    },
+    {
+      "id": 28,
+      "category": "impact",
+      "question": "What modules depend on the common types library?",
+      "expected_tools": ["get_blast_radius", "trace_callers"],
+      "quality_criteria": "Should list all importing modules across all services"
+    },
+    {
+      "id": 29,
+      "category": "impact",
+      "question": "I am adding a new field to the API response. What serialization and test files need changes?",
+      "expected_tools": ["predict_missing_changes", "get_blast_radius"],
+      "quality_criteria": "Should identify response builders, serializers, and corresponding test files"
+    },
+    {
+      "id": 30,
+      "category": "impact",
+      "question": "What is the risk of changing the encryption utility module?",
+      "expected_tools": ["get_blast_radius", "trace_callers"],
+      "quality_criteria": "Should highlight all security-sensitive callers across services"
+    },
+    {
+      "id": 31,
+      "category": "review",
+      "question": "Who should review changes to the transaction processing service?",
+      "expected_tools": ["suggest_reviewers"],
+      "quality_criteria": "Should suggest reviewers based on ownership and recent commit history"
+    },
+    {
+      "id": 32,
+      "category": "review",
+      "question": "Who are the domain experts for the refund module?",
+      "expected_tools": ["suggest_reviewers"],
+      "quality_criteria": "Should identify developers with most commits and reviews in refund-related files"
+    },
+    {
+      "id": 33,
+      "category": "review",
+      "question": "What files usually change together with the order validation module?",
+      "expected_tools": ["predict_missing_changes"],
+      "quality_criteria": "Should show co-change file clusters from git history"
+    },
+    {
+      "id": 34,
+      "category": "review",
+      "question": "I changed these 3 files in the payment flow. Am I missing any related changes?",
+      "expected_tools": ["predict_missing_changes"],
+      "quality_criteria": "Should predict commonly co-changed files not in the changeset"
+    },
+    {
+      "id": 35,
+      "category": "review",
+      "question": "Who has the most expertise in the gateway integration layer?",
+      "expected_tools": ["suggest_reviewers"],
+      "quality_criteria": "Should rank developers by relevant commit frequency and recency"
+    },
+    {
+      "id": 36,
+      "category": "review",
+      "question": "What is the typical review scope when the config module changes?",
+      "expected_tools": ["get_blast_radius", "predict_missing_changes"],
+      "quality_criteria": "Should outline which dependent modules reviewers should also inspect"
+    },
+    {
+      "id": 37,
+      "category": "review",
+      "question": "Who should review a PR that touches the database migration scripts?",
+      "expected_tools": ["suggest_reviewers"],
+      "quality_criteria": "Should suggest both DB specialists and service owners affected by schema changes"
+    },
+    {
+      "id": 38,
+      "category": "review",
+      "question": "Are there any files in my changeset that historically cause production issues?",
+      "expected_tools": ["predict_missing_changes", "get_blast_radius"],
+      "quality_criteria": "Should flag high-churn or high-incident files from history"
+    },
+    {
+      "id": 39,
+      "category": "review",
+      "question": "What other services should be tested if I change the shared utilities module?",
+      "expected_tools": ["get_blast_radius"],
+      "quality_criteria": "Should list all downstream service dependencies"
+    },
+    {
+      "id": 40,
+      "category": "review",
+      "question": "Who owns the notification service and should approve changes to it?",
+      "expected_tools": ["suggest_reviewers"],
+      "quality_criteria": "Should identify primary maintainers and code owners"
+    },
+    {
+      "id": 41,
+      "category": "architecture",
+      "question": "How do the microservices communicate with each other?",
+      "expected_tools": ["search_modules", "get_context"],
+      "quality_criteria": "Should describe inter-service communication patterns (HTTP, queues, events)"
+    },
+    {
+      "id": 42,
+      "category": "architecture",
+      "question": "What are the main entry points to the payment platform?",
+      "expected_tools": ["search_modules", "search_symbols"],
+      "quality_criteria": "Should identify API gateway handlers and public-facing endpoints"
+    },
+    {
+      "id": 43,
+      "category": "architecture",
+      "question": "What is the dependency graph between the core services?",
+      "expected_tools": ["get_blast_radius", "search_modules"],
+      "quality_criteria": "Should describe which services depend on which, forming a clear hierarchy"
+    },
+    {
+      "id": 44,
+      "category": "architecture",
+      "question": "How is the codebase organized across microservices?",
+      "expected_tools": ["search_modules", "get_context"],
+      "quality_criteria": "Should describe the service boundaries and module organization pattern"
+    },
+    {
+      "id": 45,
+      "category": "architecture",
+      "question": "What shared libraries are used across multiple services?",
+      "expected_tools": ["search_modules", "get_blast_radius"],
+      "quality_criteria": "Should identify common/shared modules and their consumers"
+    },
+    {
+      "id": 46,
+      "category": "architecture",
+      "question": "How is configuration management handled across services?",
+      "expected_tools": ["search_modules", "search_symbols"],
+      "quality_criteria": "Should explain config loading, environment handling, and service-specific overrides"
+    },
+    {
+      "id": 47,
+      "category": "architecture",
+      "question": "What database access patterns are used in the codebase?",
+      "expected_tools": ["search_modules", "search_symbols"],
+      "quality_criteria": "Should identify ORM usage, query builders, and data access layer patterns"
+    },
+    {
+      "id": 48,
+      "category": "architecture",
+      "question": "How is error handling structured across the platform?",
+      "expected_tools": ["search_symbols", "search_modules"],
+      "quality_criteria": "Should describe error types, propagation patterns, and centralized handling"
+    },
+    {
+      "id": 49,
+      "category": "architecture",
+      "question": "What logging and observability patterns are used?",
+      "expected_tools": ["search_modules", "search_symbols"],
+      "quality_criteria": "Should identify logging frameworks, tracing, and metrics modules"
+    },
+    {
+      "id": 50,
+      "category": "architecture",
+      "question": "How are background jobs and async processing handled?",
+      "expected_tools": ["search_modules", "search_symbols"],
+      "quality_criteria": "Should describe job queues, workers, and async task patterns"
+    }
+  ]
+}

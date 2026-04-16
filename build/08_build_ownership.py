@@ -25,6 +25,37 @@ try:
 except ImportError:
     cfg = {}
 
+ALIAS_PATH = pathlib.Path(
+    cfg.get("author_aliases_path",
+            str(pathlib.Path(__file__).parent.parent / "config" / "author_aliases.yaml"))
+)
+
+
+def load_aliases() -> tuple[dict, dict, set]:
+    """Load author alias config. Returns (aliases, display_names, exclude)."""
+    if not ALIAS_PATH.exists():
+        return {}, {}, set()
+    try:
+        with open(ALIAS_PATH) as f:
+            data = yaml.safe_load(f) or {}
+        aliases = data.get("aliases", {})
+        display_names = data.get("display_names", {})
+        exclude = set(data.get("exclude", []))
+        print(f"Loaded {len(aliases)} aliases, {len(exclude)} exclusions from {ALIAS_PATH.name}", flush=True)
+        return aliases, display_names, exclude
+    except Exception as e:
+        print(f"WARNING: Could not load aliases: {e}", flush=True)
+        return {}, {}, set()
+
+
+def resolve_email(email: str, aliases: dict) -> str:
+    """Resolve an email through the alias chain."""
+    seen = set()
+    while email in aliases and email not in seen:
+        seen.add(email)
+        email = aliases[email]
+    return email
+
 SRC_EXTS  = {".hs", ".rs", ".hs-boot", ".py", ".ts", ".js", ".tsx", ".jsx", ".groovy"}
 SKIP_DIRS = {".stack-work", "node_modules", "__pycache__", ".git", "dist", "venv", ".venv"}
 MAX_FILES = 40
@@ -187,8 +218,48 @@ def build_from_json(json_path: pathlib.Path):
     return ownership, author_names, total_commits
 
 
+def apply_aliases(ownership, author_names, aliases, display_names_map, exclude):
+    """Resolve aliases in ownership data. Returns new ownership + author_names."""
+    if not aliases and not exclude:
+        return ownership, author_names
+
+    # Merge author_names through aliases
+    merged_names = {}
+    for email, name in author_names.items():
+        if email in exclude:
+            continue
+        canonical = resolve_email(email, aliases)
+        # Prefer display_names_map, then existing name for canonical, then current name
+        if canonical in display_names_map:
+            merged_names[canonical] = display_names_map[canonical]
+        elif canonical not in merged_names:
+            merged_names[canonical] = name
+
+    # Merge ownership counts through aliases
+    merged_ownership = defaultdict(lambda: defaultdict(int))
+    for mod, authors in ownership.items():
+        for email, count in authors.items():
+            if email in exclude:
+                continue
+            canonical = resolve_email(email, aliases)
+            merged_ownership[mod][canonical] += count
+
+    aliased = sum(1 for e in author_names if resolve_email(e, aliases) != e)
+    excluded = sum(1 for e in author_names if e in exclude)
+    print(f"Alias resolution: {len(author_names)} emails → {len(merged_names)} canonical "
+          f"({aliased} aliased, {excluded} excluded)", flush=True)
+
+    return merged_ownership, merged_names
+
+
 def write_index(ownership, author_names, total_commits, out_path):
     """Write the ownership index to disk."""
+    # Apply alias resolution
+    aliases, display_names_map, exclude = load_aliases()
+    ownership, author_names = apply_aliases(
+        ownership, author_names, aliases, display_names_map, exclude
+    )
+
     TOP_AUTHORS = 10
     index = {}
     for mod, authors in ownership.items():
@@ -204,6 +275,7 @@ def write_index(ownership, author_names, total_commits, out_path):
             "total_commits": total_commits,
             "total_modules": len(index),
             "total_unique_authors": len(author_names),
+            "aliases_applied": len(aliases) if aliases else 0,
         },
         "authors": dict(author_names),
         "modules": index,

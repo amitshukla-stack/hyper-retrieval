@@ -204,6 +204,28 @@ else:
     fail(f"  PaymentFlows blast radius must include euler-api-txns",
          f"Affected: {affected}")
 
+# Tiered impact must be present with at least 2 tiers populated
+tiered = blast.get("tiered_impact", [])
+tier_names = set(t["tier"] for t in tiered)
+if len(tiered) > 0 and len(tier_names) >= 2:
+    ok(f"  tiered_impact: {len(tiered)} items across {sorted(tier_names)}")
+else:
+    fail(f"  tiered_impact must have ≥2 tiers",
+         f"Got {len(tiered)} items, tiers: {tier_names}")
+
+# Each tiered item must have required fields
+if tiered:
+    t0 = tiered[0]
+    required = {"module", "tier", "confidence", "signals"}
+    if required <= set(t0.keys()):
+        ok(f"  tiered item has required fields: {sorted(required)}")
+    else:
+        fail(f"  tiered item missing fields", f"keys: {set(t0.keys())}")
+    if 0.0 <= t0["confidence"] <= 1.0:
+        ok(f"  confidence in [0,1]: {t0['confidence']}")
+    else:
+        fail(f"  confidence out of range", f"conf={t0['confidence']}")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 7. resolve_files_to_modules — known git-diff paths

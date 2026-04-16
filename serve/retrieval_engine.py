@@ -55,12 +55,17 @@ cluster_summaries:   dict  = {}
 cochange_index:      dict  = {}
 ownership_index:     dict  = {}   # module → [{"email","name","commits"}, ...]
 granger_index:       dict  = {}   # "A→B" → {"source","target","best_lag","p_value","f_statistic"}
+community_index:     dict  = {}   # community_id → {"size","services","label","cross_service"}
+module_to_community: dict  = {}   # module_cc_key → community_id
+activity_index:      dict  = {}   # module_name → {"activity_score", "activity_50", "activity_200"}
 file_to_nodes:       dict  = {}   # module_name → [node_id, ...]
 filepath_to_module:  dict  = {}   # relative_file_path → module_name
 _cochange_loaded_at: float = 0.0
 _mg_to_cc:           dict  = {}   # MG dot-name → cochange ::key
 _ownership_name_map: dict  = {}   # MG dot-name → ownership ::key
 _cc_to_mg:           dict  = {}   # cochange ::key → MG dot-name
+_filepath_suffix_idx: dict = {}   # normalized_basename → [(normalized_full_path, module)]
+_stem_to_modules:    dict  = {}   # stem → [module_name, ...]
 
 body_store:   dict = {}
 call_graph:   dict = {}
@@ -340,10 +345,20 @@ def initialize(
             mod = d.get("module", "")
             if mod:
                 file_to_nodes.setdefault(mod, []).append(nid)
+                # Build stem→modules index for fast stem lookups
+                for sep in (".", "::"):
+                    stem = mod.rsplit(sep, 1)[-1]
+                    if stem:
+                        _stem_to_modules.setdefault(stem, []).append(mod)
             f = d.get("file", "")
             m = d.get("module", "") or nid
             if f and m:
                 filepath_to_module[f] = m
+        # Build suffix index for fast file→module resolution
+        for known_path, mod in filepath_to_module.items():
+            norm = known_path.replace("\\", "/").lstrip("/")
+            basename = norm.rsplit("/", 1)[-1]
+            _filepath_suffix_idx.setdefault(basename, []).append((norm, mod))
 
         # v6 stores (all optional — degrade gracefully)
         for path, store, name in [
@@ -377,6 +392,28 @@ def initialize(
             _cochange_loaded_at = cochange_path.stat().st_mtime
             meta = ci.get("meta", {})
             print(f"  {meta.get('total_modules',0):,} modules  {meta.get('total_pairs',0):,} pairs")
+
+            # Load cross-repo co-change index (additive — merges into same dict)
+            cross_cochange_path = artifact_dir / "cross_cochange_index.json"
+            if cross_cochange_path.exists():
+                print("Loading cross-repo co-change index...")
+                with open(str(cross_cochange_path)) as _f:
+                    xci = json.load(_f)
+                xedges = xci.get("edges", {})
+                # Merge: for existing modules, append new cross-repo partners
+                for mod, partners in xedges.items():
+                    if mod in cochange_index:
+                        existing = {p["module"] for p in cochange_index[mod]}
+                        for p in partners:
+                            if p["module"] not in existing:
+                                cochange_index[mod].append(p)
+                    else:
+                        cochange_index[mod] = partners
+                xmeta = xci.get("meta", {})
+                print(f"  +{xmeta.get('total_modules',0):,} cross-repo modules  "
+                      f"{xmeta.get('total_pairs',0):,} pairs  "
+                      f"{xmeta.get('repo_pairs',0)} repo pairs")
+
             _build_cochange_name_map()
         else:
             print("  co-change index: not built yet")
@@ -413,6 +450,26 @@ def initialize(
             meta_gi = gi.get("metadata", {})
             print(f"  {meta_gi.get('significant_results', 0):,} causal pairs  "
                   f"(p<{meta_gi.get('p_threshold', 0.05)})")
+
+        community_path = artifact_dir / "community_index.json"
+        if community_path.exists():
+            print("Loading community index...")
+            with open(str(community_path)) as _f:
+                ci_data = json.load(_f)
+            community_index.update(ci_data.get("communities", {}))
+            module_to_community.update(ci_data.get("module_to_community", {}))
+            meta_ci = ci_data.get("meta", {})
+            print(f"  {meta_ci.get('n_communities', 0)} communities  "
+                  f"{meta_ci.get('cross_service_communities', 0)} cross-service  "
+                  f"modularity={meta_ci.get('modularity', 0)}")
+
+        # Load activity index (from 10_build_activity.py)
+        activity_path = artifact_dir / "activity_index.json"
+        if activity_path.exists():
+            print("Loading activity index...")
+            with open(str(activity_path)) as _f:
+                activity_index.update(json.load(_f))
+            print(f"  {len(activity_index)} modules with activity data")
 
         # Inject synthetic co-change edges from call_graph (cold-start fix)
         if call_graph and cochange_index is not None:
@@ -781,27 +838,35 @@ def resolve_files_to_modules(file_paths: list) -> dict:
         fp_norm = fp.replace("\\", "/").lstrip("/")
         found = []
 
-        # 1 + 2: suffix match with shrinking window
-        fp_parts = fp_norm.split("/")
-        for n in range(len(fp_parts), 0, -1):
-            suffix = "/".join(fp_parts[-n:])
-            for known_path, mod in filepath_to_module.items():
-                known_norm = known_path.replace("\\", "/").lstrip("/")
-                if known_norm == suffix or known_norm.endswith("/" + suffix) or suffix.endswith("/" + known_norm):
-                    if mod not in found:
-                        found.append(mod)
-            if found:
-                break
+        # 1 + 2: suffix match via pre-built index (O(candidates) not O(all_paths))
+        basename = fp_norm.rsplit("/", 1)[-1]
+        candidates = _filepath_suffix_idx.get(basename, [])
+        if candidates:
+            fp_parts = fp_norm.split("/")
+            for n in range(len(fp_parts), 0, -1):
+                suffix = "/".join(fp_parts[-n:])
+                for known_norm, mod in candidates:
+                    if known_norm == suffix or known_norm.endswith("/" + suffix) or suffix.endswith("/" + known_norm):
+                        if mod not in found:
+                            found.append(mod)
+                if found:
+                    break
 
-        # 3: stem match against MG
-        if not found and MG is not None:
+        # 3: stem match via pre-built index, fallback to MG scan if index empty
+        if not found:
             stem = pathlib.Path(fp_norm).stem
-            for mod in MG.nodes():
-                if mod.split(".")[-1] == stem or mod.split("::")[-1] == stem:
+            stem_candidates = _stem_to_modules.get(stem, [])
+            if stem_candidates:
+                for mod in stem_candidates[:3]:
                     if mod not in found:
                         found.append(mod)
-                    if len(found) >= 3:
-                        break
+            elif MG is not None:
+                for mod in MG.nodes():
+                    if mod.split(".")[-1] == stem or mod.split("::")[-1] == stem:
+                        if mod not in found:
+                            found.append(mod)
+                        if len(found) >= 3:
+                            break
 
         # 4: direct path→module conversion (zero-config fallback)
         # Convert file path to dot-notation: serve/retrieval_engine.py → serve.retrieval_engine
@@ -858,12 +923,143 @@ def get_blast_radius(module_names: list, max_hops: int = 2) -> dict:
 
     import_neighbors.sort(key=lambda x: (x["hop"], x["module"]))
 
-    return {
+    # ── Tiered impact analysis ──────────────────────────────────────────
+    # Combines import + co-change + Granger into unified scored tiers:
+    #   will_break  — direct structural dependency (hop 1)
+    #   may_break   — transitive dependency OR strong Granger causal signal
+    #   review      — co-change only (no static link) or weak signals
+    tiered: dict = {}  # module → {tier, confidence, signals}
+    import_set = set()
+
+    for nb in import_neighbors:
+        mod = nb["module"]
+        import_set.add(mod)
+        hop = nb["hop"]
+        static_score = 1.0 / hop  # 1.0 for hop 1, 0.5 for hop 2, etc.
+
+        # Check for Granger causal evidence
+        granger_score = 0.0
+        granger_info = None
+        if granger_index:
+            for s in seed:
+                cc_s = _resolve_cc(s)
+                cc_t = _resolve_cc(mod)
+                for key in (f"{cc_s}→{cc_t}", f"{cc_t}→{cc_s}"):
+                    if key in granger_index:
+                        g = granger_index[key]
+                        gs = 1.0 - min(g["p_value"] * 20, 1.0)  # p=0 → 1.0, p=0.05 → 0.0
+                        if gs > granger_score:
+                            granger_score = gs
+                            granger_info = {"lag": g["best_lag"], "p_value": g["p_value"]}
+
+        # Activity boost: recently changed modules are more likely to be affected
+        act_score = activity_index.get(mod, {}).get("activity_score", 0.0)
+
+        confidence = round(0.4 * static_score + 0.25 * granger_score + 0.2 * act_score + 0.15, 3)
+        tier = "will_break" if hop == 1 else "may_break"
+
+        tiered[mod] = {
+            "module": mod, "tier": tier, "confidence": confidence,
+            "service": nb.get("service", ""),
+            "signals": {"static_hop": hop, "direction": nb["direction"]},
+        }
+        if act_score > 0:
+            tiered[mod]["signals"]["activity_score"] = round(act_score, 3)
+        if granger_info:
+            tiered[mod]["signals"]["granger"] = granger_info
+
+    for nb in cochange_neighbors:
+        mod = nb["module"]
+        cc_weight = nb.get("weight", 0)
+        max_w = max((n.get("weight", 1) for n in cochange_neighbors), default=1)
+        cc_score = min(cc_weight / max(max_w, 1), 1.0)
+
+        granger_score = 0.0
+        granger_info = None
+        if granger_index:
+            for s in seed:
+                cc_s = _resolve_cc(s)
+                cc_t = _resolve_cc(mod)
+                for key in (f"{cc_s}→{cc_t}", f"{cc_t}→{cc_s}"):
+                    if key in granger_index:
+                        g = granger_index[key]
+                        gs = 1.0 - min(g["p_value"] * 20, 1.0)
+                        if gs > granger_score:
+                            granger_score = gs
+                            granger_info = {"lag": g["best_lag"], "p_value": g["p_value"]}
+
+        if mod in tiered:
+            # Already in import graph — boost confidence with co-change + activity evidence
+            existing = tiered[mod]
+            act_score = activity_index.get(mod, {}).get("activity_score", 0.0)
+            cc_boost = 0.12 * cc_score + 0.08 * granger_score + 0.1 * act_score
+            existing["confidence"] = round(min(1.0, existing["confidence"] + cc_boost), 3)
+            existing["signals"]["cochange_weight"] = cc_weight
+            if act_score > 0:
+                existing["signals"]["activity_score"] = round(act_score, 3)
+            if granger_info and "granger" not in existing["signals"]:
+                existing["signals"]["granger"] = granger_info
+        else:
+            # Co-change only — no static dependency
+            act_score = activity_index.get(mod, {}).get("activity_score", 0.0)
+            confidence = round(0.3 * cc_score + 0.3 * granger_score + 0.3 * act_score + 0.1, 3)
+            tier = "may_break" if granger_score > 0.5 or act_score > 0.5 else "review"
+            svc = ""
+            if MG is not None and mod in MG.nodes:
+                svc = MG.nodes[mod].get("service", "")
+            tiered[mod] = {
+                "module": mod, "tier": tier, "confidence": confidence,
+                "service": svc,
+                "signals": {"cochange_weight": cc_weight},
+            }
+            if act_score > 0:
+                tiered[mod]["signals"]["activity_score"] = round(act_score, 3)
+            if granger_info:
+                tiered[mod]["signals"]["granger"] = granger_info
+
+    tiered_list = sorted(tiered.values(), key=lambda x: -x["confidence"])
+    # ── End tiered impact ───────────────────────────────────────────────
+
+    # ── Community context (if available) ────────────────────────────────
+    community_context = None
+    if module_to_community:
+        seed_communities = set()
+        for s in seed:
+            cc_key = _resolve_cc(s)
+            comm = module_to_community.get(cc_key)
+            if comm is not None:
+                seed_communities.add(str(comm))
+        if seed_communities:
+            affected_communities = set(seed_communities)
+            for item in tiered_list[:20]:  # check top impacted modules
+                cc_key = _resolve_cc(item["module"])
+                comm = module_to_community.get(cc_key)
+                if comm is not None:
+                    affected_communities.add(str(comm))
+            community_context = {
+                "seed_communities": sorted(seed_communities),
+                "affected_communities": sorted(affected_communities),
+                "cross_community": len(affected_communities) > len(seed_communities),
+                "details": {
+                    cid: {
+                        "label": community_index.get(cid, {}).get("label", ""),
+                        "size": community_index.get(cid, {}).get("size", 0),
+                        "cross_service": community_index.get(cid, {}).get("cross_service", False),
+                    }
+                    for cid in affected_communities if cid in community_index
+                },
+            }
+
+    result = {
         "seed_modules":       seed,
         "import_neighbors":   import_neighbors,
         "cochange_neighbors": cochange_neighbors,
         "affected_services":  sorted(affected_services),
+        "tiered_impact":      tiered_list,
     }
+    if community_context:
+        result["community_context"] = community_context
+    return result
 
 
 def predict_missing_changes(changed_modules: list, min_weight: int = 5,

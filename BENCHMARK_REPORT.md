@@ -35,7 +35,7 @@ HyperRetrieval's core design is **well-aligned with proven patterns** for produc
 | Dimension | HyperRetrieval | SOTA |
 |---|---|---|
 | Algorithm | Louvain (resolution=1.2) | ⚠️ **Leiden algorithm** supersedes Louvain as of 2024 |
-| Graph level | Module-level for clustering | ✅ Correct — node-level Louvain on 94K nodes is intractable |
+| Graph level | Module-level for clustering | ✅ Correct — node-level Louvain on large graphs is intractable |
 | Isolated modules | Own singleton cluster | ✅ |
 | Edge types | Import + co-change | ⚠️ ESEM 2024: adding call-graph edges to clustering input improves community quality |
 
@@ -82,7 +82,7 @@ HyperRetrieval's core design is **well-aligned with proven patterns** for produc
 | Cold-start | No fallback for zero-history modules | ❌ **Gap** |
 | Integration type | Co-change only | ⚠️ ESEM 2024: hybrid with structural edges improves F1 |
 
-**Cold-start gap:** 94,244 symbols, but co-change index has 111,005 pairs across 7,363 modules. Many new modules have zero co-change history. ESEM 2024 showed that adding import-graph and call-graph as synthetic co-change pairs (at lower weight, e.g. 0.1 vs observed 1.0) plugs this gap. This is especially relevant for `get_blast_radius` on recently-added modules.
+**Cold-start gap:** In production deployments, many new modules have zero co-change history. ESEM 2024 showed that adding import-graph and call-graph as synthetic co-change pairs (at lower weight, e.g. 0.1 vs observed 1.0) plugs this gap. This is especially relevant for `get_blast_radius` on recently-added modules.
 
 ---
 
@@ -124,14 +124,14 @@ No significant gap here.
 | Component | HyperRetrieval | SOTA |
 |---|---|---|
 | Dense retrieval | ✅ Stratified, multi-query | ✅ |
-| Exact/keyword | ✅ keyword_search | ⚠️ Custom regex vs. proper BM25 — miss phrase matching, IDF weighting |
-| Fusion method | Additive weighted scores | ⚠️ RRF (k=60) is parameter-free and outperforms fixed weights in ablations |
+| Exact/keyword | ✅ BM25 (rank_bm25) + IDF-weighted keyword search | ✅ |
+| Fusion method | ✅ RRF (k=60) via `unified_search` | ✅ Parameter-free, proven in ablations |
 | Graph expansion | ✅ Both import + co-change BFS | ✅ |
 | Reranking | ❌ None | ⚠️ Cross-encoder (ColBERT/BGE-reranker) adds +8–15% precision on top-10 |
 | Multi-query | ✅ Generates query variants | ✅ |
 | Service budget | ✅ Per-service allocation | ✅ Prevents 1 large service from monopolizing results |
 
-**Biggest gap:** No BM25 + no reranker. Exact symbol name queries (`TxnSplitDetail`, `createPaymentLink`) rely on keyword_search which uses simple word-presence matching without IDF weighting. BM25 (e.g., `rank_bm25` library, 200 lines to add) would score rare identifiers much higher than common words.
+**Remaining gap:** No cross-encoder reranker. Adding a lightweight reranker (e.g., BGE-reranker-v2) on top of RRF results would improve precision@10 by an estimated 8–15%.
 
 ---
 
@@ -189,7 +189,7 @@ Current: top 20 modules by score, scores are semantic similarity + keyword hits.
 ### vs. Augment Code
 - Augment: Maintains explicit symbol-reference graph, near-real-time, cloud-hosted
 - Most similar architecture to HyperRetrieval; Augment has real-time delta updates, HyperRetrieval requires full rebuild
-- **HyperRetrieval advantage:** Co-change index, domain-specific graph (Juspay payments)
+- **HyperRetrieval advantage:** Co-change index, self-hosted with domain-specific graph customization
 - **Augment advantage:** Always-current, Tree-sitter exact boundaries
 
 ### vs. GitHub Copilot Workspace
@@ -202,10 +202,10 @@ Current: top 20 modules by score, scores are semantic similarity + keyword hits.
 
 | # | Gap | Layer | Effort | Impact | Paper / Source |
 |---|---|---|---|---|---|
-| 1 | **BM25 + RRF fusion** | Serve | Medium | 🔴 High | RRF consensus 2024; exact symbol queries failing |
+| 1 | ~~**BM25 + RRF fusion**~~ | Serve | — | ✅ Done | `unified_search()` + `bm25_search()` + `rrf_merge()` implemented |
 | 2 | **Leiden → replace Louvain** | Build | Low | 🟡 Medium | Traag et al. 2024; disconnected community fix |
 | 3 | **Synthetic co-change edges from call/import graph** | Build | Medium | 🟡 Medium | ESEM 2024; cold-start coverage for new modules |
-| 4 | **Cross-encoder reranker** | Serve | Medium | 🟡 Medium | Voyage AI Oct 2025; +8–15% precision @10 |
+| 4 | **Cross-encoder reranker** | Serve | Medium | 🔴 High (now #1) | Voyage AI Oct 2025; +8–15% precision @10 |
 | 5 | **search_modules cap 20 → 10 + density threshold** | Serve | Low | 🟡 Medium | RAG precision curve finding |
 | 6 | **Context ordering: highest-relevance first** | Serve | Low | 🟡 Medium | Lost-in-the-Middle (archived finding, confirmed 2025) |
 | 7 | **Tree-sitter for Haskell/Rust body extraction** | Build | High | 🟡 Medium | cAST, June 2025; +5.5 pts on boundary accuracy |
@@ -219,7 +219,7 @@ Current: top 20 modules by score, scores are semantic similarity + keyword hits.
 
 HyperRetrieval is **production-quality** for a v1 system. The embedding model choice (Qwen3-8B) is globally optimal. The graph + co-change dual-indexing is more sophisticated than most commercial tools. The MCP tool structure and ReAct loop design align with best-practice findings.
 
-The primary engineering debt is in **retrieval fusion** (no BM25, no reranker, additive scoring vs. RRF) — this is the layer most likely to produce noisy results for exact-identifier queries. The **Leiden clustering fix** is a low-effort correctness improvement. Everything else is refinement.
+BM25 + RRF fusion is now implemented (`unified_search`). The primary remaining engineering debt is the **cross-encoder reranker** (estimated +8–15% precision@10) and the **Leiden clustering fix** (low-effort correctness improvement). Everything else is refinement.
 
 ---
 

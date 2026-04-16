@@ -114,18 +114,18 @@ def search_symbols(query: str, service: str = "", brief: bool = False) -> str:
 
     If results look like test/harness code (file path contains "test", "spec", "harness",
     "scenario", "mock"), do NOT jump to get_context. Instead:
-      → Retry with service= filter (e.g. service="euler-api-txns") to skip test repos
-      → Or use a more specific query (e.g. "mandate retry workflow" not "mandate retry")
+      → Retry with service= filter to skip test repos
+      → Or use a more specific query (e.g. "payment retry workflow" not "payment retry")
       → Or call get_module() with the module prefix from the file paths you see
 
     Examples:
-      search_symbols("mandate retry", service="euler-api-txns") → skip UCS test noise
-      search_symbols("preauth auto refund") → finds trigger functions
-      search_symbols("token validation", service="euler-api-gateway") → scoped scan
+      search_symbols("payment retry", service="api-gateway") → scoped to one service
+      search_symbols("auth token validation") → finds relevant functions
+      search_symbols("database connection pool", brief=True) → quick overview
 
     Args:
-        query:   Natural language or code-style search (e.g. "UPI collect flow handler")
-        service: Optional — restrict to one service (e.g. "euler-api-gateway", "UCS")
+        query:   Natural language or code-style search (e.g. "user authentication handler")
+        service: Optional — restrict to one service (e.g. "api-gateway", "auth-service")
         brief:   True = name+file only (~50 tokens/result). False = full signature (default)
     """
     return T.tool_search_symbols(query, service, brief)
@@ -140,14 +140,14 @@ def search_modules(query: str, service: str = "") -> str:
     exact function. One call surfaces the entire relevant namespace.
 
     Decision guide:
-    - Known gateway name (payu, razorpay, hdfc) → finds all its modules instantly
-    - Known domain concept (mandate, refund, emi) → finds all owning modules
+    - Known component name (auth, payments, notifications) → finds all its modules instantly
+    - Known domain concept (billing, subscriptions, webhooks) → finds all owning modules
     - Use BEFORE get_module to discover what modules exist for a topic
 
     Examples:
-      search_modules("PayU")              → Euler...PayU.Routes, ...Transforms, ...Types
-      search_modules("mandate", service="euler-api-txns")
-      search_modules("refund webhook")
+      search_modules("auth")              → Auth.Routes, Auth.Middleware, Auth.Types
+      search_modules("billing", service="payments-service")
+      search_modules("webhook handler")
 
     Args:
         query:   Keywords to search in module paths
@@ -172,9 +172,9 @@ def get_module(module_name: str, service: str = "", max_symbols: int = 30) -> st
     - After reviewing the list, call get_function_body() on specific IDs
 
     Examples:
-      get_module("Euler.API.Gateway.Gateway.Razorpay.Flow")
-      get_module("MandateWorkflow", service="euler-api-txns", max_symbols=15)
-      get_module("Payment.Interface", service="euler-api-pre-txn")
+      get_module("Auth.Middleware.JWT")
+      get_module("PaymentWorkflow", service="payments-service", max_symbols=15)
+      get_module("User.Interface", service="api-gateway")
 
     Args:
         module_name: Module name or prefix (dots or :: separators both work)
@@ -190,7 +190,7 @@ def get_function_body(fn_id: str, reason: str = "") -> str:
     Read the source code of one function by its fully-qualified ID.
 
     The ID comes from search_symbols or get_module output (e.g.
-    'Euler.API.Gateway.Gateway.Razorpay.Flow.Webhook.verifyAmount').
+    'Auth.Middleware.JWT.verifyToken').
 
     Also returns: log patterns emitted, direct callees listed.
 
@@ -262,8 +262,8 @@ def get_blast_radius(files_or_modules: list[str], max_hops: int = 2) -> str:
     - For a single function's impact, trace_callers is faster
 
     Examples:
-      get_blast_radius(["euler-api-gateway/src/Routes.hs"])
-      get_blast_radius(["Euler.API.Gateway.Routes", "Euler.API.Txns.Mandate"])
+      get_blast_radius(["api-gateway/src/routes.py"])
+      get_blast_radius(["Auth.Routes", "Payments.Checkout"])
 
     Args:
         files_or_modules: File paths (from git diff) or module names. Both work.
@@ -286,7 +286,7 @@ def get_blast_radius(files_or_modules: list[str], max_hops: int = 2) -> str:
         return (
             f"Could not resolve any inputs to known modules.\n"
             f"Unresolved: {unresolved}\n"
-            f"Try passing module names directly (e.g. 'Euler.API.Gateway.Routes')."
+            f"Try passing module names directly (e.g. 'Auth.Routes')."
         )
 
     result = RE.get_blast_radius(seed_mods, max_hops=max_hops)
@@ -349,8 +349,8 @@ def predict_missing_changes(changed_files: list[str], min_confidence: float = 0.
     Pass git diff --name-only output directly — file paths are auto-resolved.
 
     Examples:
-      predict_missing_changes(["euler-api-gateway/src/Routes.hs"])
-      predict_missing_changes(["Euler.API.Gateway.Routes", "Euler.API.Txns.Flow"])
+      predict_missing_changes(["api-gateway/src/routes.py"])
+      predict_missing_changes(["Auth.Routes", "Payments.Flow"])
 
     Args:
         changed_files: File paths (from git diff) or module names. Both work.
@@ -366,7 +366,7 @@ def predict_missing_changes(changed_files: list[str], min_confidence: float = 0.
 
     if not changed_mods:
         return ("Could not resolve any inputs to known modules.\n"
-                "Try passing module names directly (e.g. 'Euler.API.Gateway.Routes').")
+                "Try passing module names directly (e.g. 'Auth.Routes').")
 
     result = RE.predict_missing_changes(changed_mods)
 
@@ -410,7 +410,7 @@ def check_my_changes(changed_files: list[str]) -> str:
     - Security-sensitive modules that need extra review
 
     Examples:
-      check_my_changes(["euler-api-gateway/src/Routes.hs"])
+      check_my_changes(["api-gateway/src/routes.py"])
       check_my_changes(["PaymentFlows", "TransactionHelper"])
     """
     # Resolve files to modules
@@ -519,7 +519,7 @@ def suggest_reviewers(changed_files: list[str], top_k: int = 5) -> str:
 
     Examples:
       suggest_reviewers(["PaymentFlows", "TransactionHelper"])
-      suggest_reviewers(["euler-api-gateway/src/Routes.hs"])
+      suggest_reviewers(["api-gateway/src/routes.py"])
     """
     # Resolve files to modules
     resolved = RE.resolve_files_to_modules(changed_files)
@@ -575,7 +575,7 @@ def score_change_risk(changed_files: list[str], weights: dict | None = None) -> 
 
     Examples:
       score_change_risk(["PaymentFlows", "TransactionHelper"])
-      score_change_risk(["euler-api-gateway/src/Routes.hs"])
+      score_change_risk(["api-gateway/src/routes.py"])
     """
     # Resolve files to modules
     resolved = RE.resolve_files_to_modules(changed_files)
@@ -642,11 +642,13 @@ def get_context(
         query:       Your question or topic (natural language)
         persona:     Leave as default — only "default" is supported
         services:    Limit to specific services — cuts tokens by 50-80%
-                     e.g. ["euler-api-gateway", "euler-api-txns"]
+                     e.g. ["api-gateway", "auth-service"]
         max_symbols: Cap symbols per service (0 = no cap). Use 20-30 for large queries.
     """
+    # Use unified_search (RRF fusion of dense vector + BM25 + co-change expansion)
+    # instead of separate keyword + vector searches
+    vec_by_svc = RE.unified_search([query], k_total=300) if RE.can_embed() else {}
     kw_by_svc  = RE.cross_service_keyword_search(query, max_per_service=25)
-    vec_by_svc = RE.stratified_vector_search([query], k_total=300) if RE.can_embed() else {}
 
     # Filter to requested services if specified
     if services:

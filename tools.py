@@ -52,14 +52,10 @@ import retrieval_engine as RE
 _DEFAULT_SYSTEM_PROMPT = """
 You are Codebase Expert — an interactive AI assistant embedded in your organisation's codebase. You help engineers understand, trace, debug, and reason about code across services using a set of retrieval tools.
 
-## Service architecture (authoritative — never invent or deviate)
+## Service architecture
 
-- `euler-api-txns` — core payment orchestrator; drives the full transaction lifecycle
-- `euler-api-order` — order creation and routing; calls `euler-api-txns`, NOT gateways directly
-- `euler-api-gateway` (Haskell) / `UCS` (Rust) — connector-aggregation layers; translate internal payment requests to gateway-specific API calls; called BY `euler-api-txns`
-- `euler-api-pre-txn` — pre-transaction operations: eligibility, offers, EMI, surcharges
-- `euler-db` — canonical shared type definitions (library, not a runtime service)
-- Canonical call chain: `euler-api-order` → `euler-api-txns` → [`euler-api-gateway` | `UCS`] → external gateway
+Service architecture is derived from the indexed codebase. Use `search_modules` and `get_module` to discover
+the actual service topology — never invent or assume service names or call chains.
 
 ## Tone and style
 
@@ -116,9 +112,9 @@ DIAGRAM: If your answer involves a sequential flow, a decision tree, or cross-se
 
 ```mermaid
 flowchart LR
-    A[euler-api-txns<br/>functionName] --> B{Decision Point}
-    B -->|UPI Collect| C[euler-api-gateway<br/>handleUpiCollect]
-    B -->|UPI Intent| D[UCS<br/>determine_upi_flow]
+    A[ServiceA<br/>functionName] --> B{Decision Point}
+    B -->|Path 1| C[ServiceB<br/>handleRequest]
+    B -->|Path 2| D[ServiceC<br/>processFlow]
 ```
 
 Rules: `flowchart LR` for flows · `flowchart TD` for hierarchies · node labels as ServiceName<br/>functionName · edge labels as condition/data type · max 15 nodes · only nodes you can name from evidence.""".strip()
@@ -290,7 +286,7 @@ AGENT_TOOLS = [
             },
             "service": {
                 "type": "string",
-                "description": "Restrict search to a specific service name (e.g. 'euler-api-txns'). Omit to search all services."
+                "description": "Restrict search to a specific service name (e.g. 'api-gateway'). Omit to search all services."
             }
         }, "required": ["query"]}
     }},
@@ -298,13 +294,10 @@ AGENT_TOOLS = [
         "name": "search_docs",
         "description": (
             "Search indexed internal developer documentation.\n\n"
-            "IMPORTANT — current index contains ONLY internal Haskell library notes: "
-            "database layer (Beam ORM), caching layer, connection pooling, code style guides. "
-            "It does NOT contain payment flow docs, UPI specs, API contracts, gateway specs, "
-            "or merchant integration guides.\n\n"
-            "Use this ONLY when the question is specifically about the DB/ORM layer or caching "
-            "internals. Do NOT call this for payment protocol questions, UPI/EMI/mandate flows, "
-            "or gateway behaviour — use search_symbols and get_function_body instead."
+            "Searches indexed developer documentation (markdown files processed during build).\n\n"
+            "Use this when the question is about internal library usage, architecture notes, "
+            "or code style guides. For questions about specific code behaviour, "
+            "use search_symbols and get_function_body instead."
         ),
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"},
@@ -321,7 +314,7 @@ AGENT_TOOLS = [
             "- The question mentions a specific gateway name and involves auth, signing, or HMAC"
         ),
         "parameters": {"type": "object", "properties": {
-            "gateway_name": {"type": "string", "description": "Gateway name as it appears in the codebase (e.g. 'razorpay', 'payu', 'stripe')."}
+            "gateway_name": {"type": "string", "description": "Gateway or connector name as it appears in the codebase (e.g. 'stripe', 'adyen')."}
         }, "required": ["gateway_name"]}
     }},
     {"type": "function", "function": {
@@ -358,10 +351,10 @@ AGENT_TOOLS = [
             "List every symbol in a module namespace. Use after search_modules to see the full surface "
             "area before deciding what to read.\n\n"
             "Pass the exact module path returned by search_modules (dot notation).\n"
-            "Example: get_module('Euler.API.Gateway.Gateway.UPI')"
+            "Example: get_module('Auth.Middleware.JWT')"
         ),
         "parameters": {"type": "object", "properties": {
-            "module_name": {"type": "string", "description": "Module namespace path in dot notation (e.g. 'PaymentFlows', 'Euler.API.Gateway.Gateway.UPI')."},
+            "module_name": {"type": "string", "description": "Module namespace path in dot notation (e.g. 'Auth.Middleware.JWT')."},
             "service":     {"type": "string", "description": "Optional: restrict to a specific service."}
         }, "required": ["module_name"]}
     }},
@@ -648,7 +641,7 @@ def tool_trace_callees(fn_id: str, reason: str = "") -> str:
         return f"No callees found for '{target}'."
 
     # Derive the module prefix of the target so we can qualify short callee names
-    # e.g. "Euler.API.Gateway.Gateway.PayU.Routes.payuBaseUrl" → "Euler.API.Gateway.Gateway.PayU.Routes"
+    # e.g. "Auth.Middleware.JWT.verifyToken" → "Auth.Middleware.JWT"
     target_module = ".".join(target.split(".")[:-1]) if "." in target else ""
 
     # Build a name→id index for fast lookup — prefer same-module matches

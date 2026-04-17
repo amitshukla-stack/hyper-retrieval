@@ -63,11 +63,12 @@
         "AI-code provenance consumption (Git AI / Agent Blame / Tabnine)",
         "Compliance-ready: EU AI Act (Aug 2026), SOX, PCI-DSS"
       ],
-      "status": "DRAFT — do not submit yet",
+      "status": "ON HOLD — Amit directive 2026-04-17: not going to PyPI yet",
       "submission_blockers": [
-        "pip package 'hyperretrieval' not yet PUBLISHED to PyPI (packaging VERIFIED 2026-04-17 c15 — pip install -e . works, 3 entry scripts install, serve imports; needs PyPI token + upload)",
-        "HR currently needs an ARTIFACT_DIR pre-built from build/ pipeline — registry should surface this as a setup step, not a silent failure",
-        "Amit's OK on external submission (inverted permission list requires no-OK, but this touches personal-account repo visibility)"
+        "Amit directive 2026-04-17: no PyPI publication this session — the `packages[].registryType=pypi` path is off the table",
+        "Alternative path A: switch to `remotes` entry (local SSE at http://127.0.0.1:8002/sse) — registry surfaces HR but users clone+setup manually",
+        "Alternative path B: hold the manifest in-repo as reference; revisit once a different distribution story (Docker image, install script, npm wrapper) is picked",
+        "HR currently needs an ARTIFACT_DIR pre-built from build/ pipeline — whatever submission path, registry entry must surface this as a setup step"
       ],
       "license": "Apache-2.0 (already at repo root LICENSE — 190 lines, verified 2026-04-17)",
       "roadmap_to_submission": [

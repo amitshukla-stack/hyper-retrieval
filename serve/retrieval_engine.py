@@ -58,6 +58,9 @@ granger_index:       dict  = {}   # "A→B" → {"source","target","best_lag","p
 community_index:     dict  = {}   # community_id → {"size","services","label","cross_service"}
 module_to_community: dict  = {}   # module_cc_key → community_id
 activity_index:      dict  = {}   # module_name → {"activity_score", "activity_50", "activity_200"}
+criticality_index:   dict  = {}   # module_name → {"score", "rank", "signals", "reasons"}
+guardrails_index:    dict  = {}   # module_name → {"file", "score", ...}
+guardrails_content:  dict  = {}   # module_name → guardrail markdown text
 file_to_nodes:       dict  = {}   # module_name → [node_id, ...]
 filepath_to_module:  dict  = {}   # relative_file_path → module_name
 _cochange_loaded_at: float = 0.0
@@ -491,6 +494,33 @@ def initialize(
             with open(str(activity_path)) as _f:
                 activity_index.update(json.load(_f))
             print(f"  {len(activity_index)} modules with activity data")
+
+        # Load criticality index (from 10_build_criticality.py)
+        crit_path = artifact_dir / "criticality_index.json"
+        if crit_path.exists():
+            print("Loading criticality index...")
+            with open(str(crit_path)) as _f:
+                _crit_data = json.load(_f)
+                criticality_index.update(_crit_data.get("modules", {}))
+            print(f"  {len(criticality_index)} modules with criticality scores")
+
+        # Load guardrails (from 11_generate_guardrails.py)
+        guardrails_dir = artifact_dir / "guardrails"
+        guardrails_idx_path = artifact_dir / "guardrails_index.json"
+        if guardrails_idx_path.exists():
+            print("Loading guardrails index...")
+            with open(str(guardrails_idx_path)) as _f:
+                _gr_data = json.load(_f)
+                for gr in _gr_data.get("guardrails", []):
+                    guardrails_index[gr["module"]] = gr
+            print(f"  {len(guardrails_index)} modules with guardrails")
+        elif guardrails_dir.exists():
+            print("Loading guardrails from directory...")
+            for gf in sorted(guardrails_dir.glob("*.md")):
+                # Extract module name from first heading
+                content = gf.read_text()
+                guardrails_content[gf.stem] = content
+            print(f"  {len(guardrails_content)} guardrail documents loaded")
 
         # Inject synthetic co-change edges from call_graph (cold-start fix)
         if call_graph and cochange_index is not None:
@@ -1464,6 +1494,138 @@ def score_change_risk(modules: list, rules: dict | None = None) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# CRITICALITY + GUARDRAILS  (auto-generated protective rules)
+# ════════════════════════════════════════════════════════════════════════════
+
+def check_criticality(module_names: list) -> dict:
+    """Return criticality scores + signals for the given modules.
+
+    MCP tool: helps developers understand how critical a module is before
+    changing it. Scores from 0 (low risk) to 1 (highest risk).
+    """
+    results = {}
+    for mod in module_names:
+        # Try exact match first
+        entry = criticality_index.get(mod)
+        if not entry:
+            # Fuzzy: try matching by module suffix
+            for crit_mod, crit_data in criticality_index.items():
+                if mod in crit_mod or crit_mod.endswith(mod):
+                    entry = crit_data
+                    break
+        if entry:
+            results[mod] = {
+                "score": entry.get("score", 0),
+                "rank": entry.get("rank", None),
+                "signals": entry.get("signals", {}),
+                "reasons": entry.get("reasons", []),
+                "risk_level": (
+                    "CRITICAL" if entry.get("score", 0) >= 0.6 else
+                    "HIGH" if entry.get("score", 0) >= 0.4 else
+                    "MEDIUM" if entry.get("score", 0) >= 0.2 else
+                    "LOW"
+                ),
+            }
+        else:
+            results[mod] = {"score": 0, "risk_level": "UNKNOWN", "reasons": ["Not in criticality index"]}
+    return results
+
+
+def get_guardrails(module_names: list) -> dict:
+    """Return guardrail documents for the given modules.
+
+    MCP tool: surfaces protective rules for critical code sections.
+    If a module has a guardrail, returns the full document with
+    what must stay true, blast radius, and review checklist.
+    """
+    results = {}
+    guardrails_dir = None
+
+    # Find guardrails directory
+    for candidate in [
+        pathlib.Path(os.environ.get("ARTIFACT_DIR", "")) / "guardrails",
+        _DEFAULT_ARTIFACT_DIR / "guardrails",
+    ]:
+        if candidate.exists():
+            guardrails_dir = candidate
+            break
+
+    for mod in module_names:
+        # Check guardrails_index first
+        gr_entry = guardrails_index.get(mod)
+        if gr_entry and guardrails_dir:
+            gr_file = guardrails_dir / gr_entry.get("file", "")
+            if gr_file.exists():
+                results[mod] = {
+                    "has_guardrail": True,
+                    "score": gr_entry.get("score", 0),
+                    "content": gr_file.read_text(),
+                }
+                continue
+
+        # Fuzzy match: search guardrails directory for matching filenames
+        if guardrails_dir:
+            mod_parts = mod.replace("::", "_").replace(".", "_").lower()
+            for gf in guardrails_dir.glob("*.md"):
+                if any(part in gf.stem.lower() for part in mod_parts.split("_") if len(part) > 4):
+                    results[mod] = {
+                        "has_guardrail": True,
+                        "score": criticality_index.get(mod, {}).get("score", 0),
+                        "content": gf.read_text(),
+                    }
+                    break
+
+        if mod not in results:
+            crit = criticality_index.get(mod, {})
+            results[mod] = {
+                "has_guardrail": False,
+                "score": crit.get("score", 0),
+                "content": None,
+                "note": "No guardrail generated for this module" + (
+                    f" (criticality {crit.get('score', 0):.2f})" if crit else ""
+                ),
+            }
+    return results
+
+
+def list_critical_modules(service: str = None, threshold: float = 0.5, top_k: int = 20) -> dict:
+    """Return the most critical modules, optionally filtered by service.
+
+    MCP tool: gives a ranked overview of the riskiest code in the codebase.
+    Use this before major refactors or when onboarding to understand where
+    the landmines are.
+    """
+    candidates = []
+    for mod, data in criticality_index.items():
+        score = data.get("score", 0)
+        if score < threshold:
+            continue
+        if service and service.lower() not in mod.lower():
+            continue
+        candidates.append({
+            "module": mod,
+            "score": score,
+            "rank": data.get("rank"),
+            "risk_level": (
+                "CRITICAL" if score >= 0.6 else
+                "HIGH" if score >= 0.4 else
+                "MEDIUM"
+            ),
+            "reasons": data.get("reasons", [])[:3],
+            "has_guardrail": mod in guardrails_index,
+        })
+
+    candidates.sort(key=lambda x: -x["score"])
+    return {
+        "total_above_threshold": len(candidates),
+        "showing": min(top_k, len(candidates)),
+        "threshold": threshold,
+        "service_filter": service,
+        "modules": candidates[:top_k],
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # BM25  (exact-match complement to dense vector search)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -1687,6 +1849,58 @@ def _cochange_expand(seed_results: dict, top_seed: int = 5,
     return dict(results)
 
 
+def _node_crit_score(node: dict) -> float:
+    """Look up criticality score for a result node. Tries several key paths."""
+    if not criticality_index:
+        return 0.0
+    # Candidate keys to try against criticality_index
+    candidates = []
+    for field in ("module", "name", "id"):
+        v = node.get(field)
+        if v:
+            candidates.append(v)
+            # _resolve_cc handles MG dot-format → cochange ::format
+            try:
+                rv = _resolve_cc(v)
+                if rv != v:
+                    candidates.append(rv)
+            except Exception:
+                pass
+    for key in candidates:
+        entry = criticality_index.get(key)
+        if entry:
+            return float(entry.get("score", 0.0))
+    return 0.0
+
+
+def _apply_criticality_boost(merged: dict) -> dict:
+    """Rerank RRF results by (rrf_score * (1 + alpha * criticality_score)).
+
+    Controlled by env: HR_CRITICALITY_BOOST (default "1"), HR_CRIT_ALPHA (default "0.5").
+    No-op if the index is empty. Preserves node ordering within each service bucket
+    by the new boosted score, and stamps `_crit_score` / `_rrf_boosted` on each node.
+    """
+    if not criticality_index or os.environ.get("HR_CRITICALITY_BOOST", "1") == "0":
+        return merged
+    try:
+        alpha = float(os.environ.get("HR_CRIT_ALPHA", "0.5"))
+    except ValueError:
+        alpha = 0.5
+
+    boosted: dict = {}
+    for svc, nodes in merged.items():
+        rescored = []
+        for node in nodes:
+            rrf = float(node.get("_rrf_score", 0.0))
+            crit = _node_crit_score(node)
+            boost = rrf * (1.0 + alpha * crit)
+            new_node = {**node, "_crit_score": crit, "_rrf_boosted": boost}
+            rescored.append(new_node)
+        rescored.sort(key=lambda n: -n.get("_rrf_boosted", 0.0))
+        boosted[svc] = rescored
+    return boosted
+
+
 def unified_search(queries: list, k_total: int = 250) -> dict:
     """
     Primary search entry point. Fuses dense vector + BM25 + co-change via RRF.
@@ -1713,6 +1927,16 @@ def unified_search(queries: list, k_total: int = 250) -> dict:
         cochange_results = _cochange_expand(merged)
         if cochange_results:
             merged = rrf_merge(merged, cochange_results)
+
+    # Criticality-aware rerank: boost modules that are risk-scored high
+    merged = _apply_criticality_boost(merged)
+
+    # Cross-encoder rerank (off by default; HR_RERANKER=bge to enable)
+    try:
+        from serve.reranker import apply_reranker as _apply_reranker
+        merged = _apply_reranker(queries[0] if queries else "", merged)
+    except Exception as _e:
+        print(f"[unified_search] reranker skipped: {_e!r}")
 
     # Apply per-service cap based on traffic_weight
     if SERVICE_PROFILES:

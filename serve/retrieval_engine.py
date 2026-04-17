@@ -1683,6 +1683,16 @@ def bm25_search(query: str, top_k: int = 60) -> dict:
     return dict(results)
 
 
+def fast_search(query: str, top_k: int = 10) -> dict:
+    """BM25 + IDF keyword RRF. Zero GPU, no embed server. Returns top_k nodes per service."""
+    bm25 = bm25_search(query, top_k=top_k * 4)
+    kw   = cross_service_keyword_search(query, max_per_service=top_k * 2)
+    if not bm25 and not kw:
+        return {}
+    merged = rrf_merge(bm25, kw)
+    return {svc: nodes[:top_k] for svc, nodes in merged.items()}
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # RRF FUSION
 # ════════════════════════════════════════════════════════════════════════════

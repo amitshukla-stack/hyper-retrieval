@@ -333,6 +333,24 @@ AGENT_TOOLS = [
         }, "required": ["type_name"]}
     }},
     {"type": "function", "function": {
+        "name": "fast_search",
+        "description": (
+            "Zero-GPU keyword search: BM25 + IDF graph index, RRF merged. Returns in <50ms "
+            "with no embed server required.\n\n"
+            "Use this when:\n"
+            "- The embed server is not running (keyword-only deployments)\n"
+            "- You have an exact identifier, class name, or module keyword\n"
+            "- You want a quick symbol lookup without semantic overhead\n"
+            "- You want to confirm a symbol exists before calling search_symbols\n\n"
+            "For conceptual or natural-language queries, use search_symbols — it adds\n"
+            "semantic vector search and co-change expansion for better recall."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "query":  {"type": "string", "description": "Symbol name, module keyword, or identifier to find"},
+            "top_k":  {"type": "integer", "description": "Max results per service (default 10)"}
+        }, "required": ["query"]}
+    }},
+    {"type": "function", "function": {
         "name": "search_modules",
         "description": (
             "Search module namespaces by keyword. Returns module paths you can pass to get_module.\n\n"
@@ -834,6 +852,21 @@ def tool_search_symbols(query: str, service: str = "", brief: bool = False) -> s
     return "\n".join(lines) if len(lines) > 1 else f"No symbols found for '{query}'."
 
 
+def tool_fast_search(query: str, top_k: int = 10) -> str:
+    """Zero-GPU keyword search: BM25 + IDF graph index, RRF merged."""
+    merged = RE.fast_search(query, top_k=top_k)
+    if not merged:
+        return f"No keyword results for '{query}'. Try search_symbols for semantic matching."
+    lines = [f"FAST SEARCH (BM25+keyword): '{query}'"]
+    for svc in sorted(merged):
+        for h in merged[svc]:
+            nid = h.get("id") or h.get("name", "?")
+            score = h.get("_rrf_score", 0)
+            lines.append(f"  [{svc}] {nid}  (rrf={score:.4f})")
+    lines.append("\n→ Keyword match only. For semantic/conceptual queries use search_symbols.")
+    return "\n".join(lines)
+
+
 def tool_search_modules(query: str, service: str = "") -> str:
     """
     Search module namespaces by keyword. Returns matching module paths that can
@@ -1187,6 +1220,7 @@ TOOL_DISPATCH: dict = {
     "trace_callees":         lambda a: tool_trace_callees(a.get("fn_id",""), a.get("reason","")),
     "trace_callers":         lambda a: tool_trace_callers(a.get("fn_id",""), a.get("reason","")),
     "get_log_patterns":      lambda a: tool_get_log_patterns(a.get("fn_id","")),
+    "fast_search":           lambda a: tool_fast_search(a.get("query",""), int(a.get("top_k", 10))),
     "search_symbols":        lambda a: tool_search_symbols(a.get("query",""), a.get("service",""), a.get("brief", False)),
     "search_modules":        lambda a: tool_search_modules(a.get("query",""), a.get("service","")),
     "get_module":            lambda a: tool_get_module(a.get("module_name",""), a.get("service",""), a.get("max_symbols", 30)),

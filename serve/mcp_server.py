@@ -768,6 +768,26 @@ def list_critical_modules(
 
 
 @mcp.tool()
+def fast_search(query: str, top_k: int = 10) -> str:
+    """
+    Zero-GPU keyword search: BM25 + IDF graph index, no embed server required.
+
+    Use this when:
+    - The embed server is not running (keyword-only or offline deployments)
+    - You have an exact function/class/module name to look up
+    - You need a sub-50ms result without semantic search overhead
+
+    For natural-language or conceptual queries, use search_symbols instead —
+    it adds vector search and co-change expansion for higher recall.
+
+    Args:
+        query:  Symbol name, module keyword, or exact identifier
+        top_k:  Max results per service (default 10)
+    """
+    return T.tool_fast_search(query, top_k)
+
+
+@mcp.tool()
 def get_context(
     query: str,
     persona: str = "default",

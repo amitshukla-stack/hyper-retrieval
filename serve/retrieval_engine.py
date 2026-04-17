@@ -585,7 +585,8 @@ def initialize(
         try:
             from sentence_transformers import CrossEncoder as _CE
             reranker = _CE("cross-encoder/ms-marco-MiniLM-L-6-v2")
-            print("  Reranker: cross-encoder/ms-marco-MiniLM-L-6-v2 loaded (CPU)")
+            reranker.predict([("warmup", "warmup")])  # eliminate first-inference cold-start delay
+            print("  Reranker: cross-encoder/ms-marco-MiniLM-L-6-v2 loaded (CPU, warmed up)")
         except Exception as _e:
             print(f"  Reranker: failed to load ({_e!r})")
 

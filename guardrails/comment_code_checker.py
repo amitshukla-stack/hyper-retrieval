@@ -116,6 +116,48 @@ def check_lock_patterns(source: str, filename: str = "<stdin>") -> list[Finding]
                         code=f"{line.strip()} → {next_line}",
                     ))
 
+    # Check: premature lock release — lock released before promised mutation
+    # Pattern: comment "acquire lock before [modifying X]" + acquire + release + mutation-after
+    _before_mutation_comment = re.compile(
+        r"^\s*#\s*(?:acquire|lock|hold|take)\b.*\bbefore\b.*\b(modif|updat|writ|set|assign|mutate|chang)",
+        re.IGNORECASE,
+    )
+    _state_mutation = re.compile(
+        r"^\s*\w[\w\[\]'\".]*\s*(?:\[.+?\]\s*)?=\s*(?!=)"  # x = y or x[k] = y (not ==)
+    )
+    for i, line in enumerate(lines):
+        if not re.search(lock_pattern, line):
+            continue
+        comment = _find_nearby_comment(lines, i, window=3)
+        if not comment or not _before_mutation_comment.match(comment):
+            continue
+        # Find the release line within the next 30 lines
+        release_line = None
+        for j in range(i + 1, min(i + 30, len(lines))):
+            if re.search(release_pattern, lines[j]):
+                release_line = j
+                break
+        if release_line is None:
+            continue
+        # Check for state mutations AFTER the release (within next 10 lines)
+        for k in range(release_line + 1, min(release_line + 10, len(lines))):
+            stripped = lines[k].strip()
+            if not stripped or stripped.startswith(("#", "def ", "class ")):
+                break
+            if _state_mutation.match(lines[k]) and "==" not in stripped:
+                findings.append(Finding(
+                    file=filename, line=release_line + 1,
+                    pattern="lock-premature-release",
+                    severity="critical",
+                    message=(
+                        f"Lock released (line {release_line+1}) before promised state mutation "
+                        f"(line {k+1}) — comment says 'before modifying' but mutation happens after release"
+                    ),
+                    comment=comment,
+                    code=f"{lines[release_line].strip()} → {lines[k].strip()}",
+                ))
+                break
+
     return findings
 
 

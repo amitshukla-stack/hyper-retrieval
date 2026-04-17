@@ -1804,13 +1804,17 @@ def bm25_search(query: str, top_k: int = 60) -> dict:
 
 
 def fast_search(query: str, top_k: int = 10) -> dict:
-    """BM25 + IDF keyword RRF. Zero GPU, no embed server. Returns top_k nodes per service."""
-    bm25 = bm25_search(query, top_k=top_k * 4)
-    kw   = cross_service_keyword_search(query, max_per_service=top_k * 2)
-    if not bm25 and not kw:
-        return {}
-    merged = rrf_merge(bm25, kw)
-    return {svc: nodes[:top_k] for svc, nodes in merged.items()}
+    """BM25 primary, IDF keyword fallback. Zero GPU, no embed server.
+
+    Uses BM25 inverted index (O(vocab) lookup, ~40ms) as primary.
+    Falls back to full IDF substring scan only when BM25 returns nothing
+    (e.g. query terms not in the BM25 vocabulary).
+    """
+    bm25 = bm25_search(query, top_k=top_k)
+    if bm25:
+        return bm25
+    # BM25 found nothing — token not in index, try substring fallback
+    return cross_service_keyword_search(query, max_per_service=top_k)
 
 
 # ════════════════════════════════════════════════════════════════════════════

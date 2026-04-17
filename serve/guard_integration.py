@@ -1,8 +1,9 @@
-"""Thin integration layer between HR's check_my_changes and the Guard prototype.
+"""Thin integration layer between HR's check_my_changes and the Guard checker.
 
-Guard ships as a standalone experiment at `~/lab/experiments/guardrails_prototype/`
-(or anywhere `HR_GUARD_PATH` points). This module lets HR *optionally* call into
-Guard for local-file static checks without hard-depending on the lab layout.
+Guard ships bundled with HR at `hyperretrieval/guardrails/comment_code_checker.py`.
+This module loads it by default so installed users get Guard out of the box. For
+development, set `HR_GUARD_PATH` to override with a local prototype checkout
+(typically `~/lab/experiments/guardrails_prototype/`).
 
 Public API:
     run_guard_on_files(paths: list[str]) -> list[dict]
@@ -14,8 +15,9 @@ Public API:
         for quick verdict aggregation.
 
 Env vars:
-    HR_GUARD_PATH    - directory containing `comment_code_checker.py`
-                       (default: `~/lab/experiments/guardrails_prototype`)
+    HR_GUARD_PATH    - directory containing `comment_code_checker.py`.
+                       When set, used verbatim. When unset, falls back to the
+                       bundled `hyperretrieval/guardrails/` checker.
     HR_GUARD_DISABLE - set to "1" to disable Guard entirely
 """
 from __future__ import annotations
@@ -27,6 +29,13 @@ from typing import Any
 _GUARD_MOD: Any = None
 _GUARD_LOAD_ERR: Exception | None = None
 
+# Bundled checker that ships with HR (vendored from the prototype). Used when
+# HR_GUARD_PATH is not set.
+_BUNDLED_CHECKER = (
+    pathlib.Path(__file__).resolve().parent.parent
+    / "guardrails" / "comment_code_checker.py"
+)
+
 
 def _load_guard():
     global _GUARD_MOD, _GUARD_LOAD_ERR
@@ -35,10 +44,11 @@ def _load_guard():
     if os.environ.get("HR_GUARD_DISABLE", "0") == "1":
         _GUARD_LOAD_ERR = RuntimeError("HR_GUARD_DISABLE=1")
         return
-    candidate = pathlib.Path(os.environ.get(
-        "HR_GUARD_PATH",
-        str(pathlib.Path.home() / "lab" / "experiments" / "guardrails_prototype")
-    )) / "comment_code_checker.py"
+    override = os.environ.get("HR_GUARD_PATH")
+    if override:
+        candidate = pathlib.Path(override) / "comment_code_checker.py"
+    else:
+        candidate = _BUNDLED_CHECKER
     if not candidate.exists():
         _GUARD_LOAD_ERR = FileNotFoundError(str(candidate))
         return

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "name": "io.github.amitshukla2308/hyperretrieval",
+  "title": "HyperRetrieval",
+  "description": "Codebase intelligence platform exposed as 15 MCP tools — precise search, graph navigation, blast-radius analysis, change prediction, PR review, activity-weighted re-ranking, criticality scoring, auto-generated guardrail docs, and AI-code provenance consumption. Built for AI coding agents working in large, long-lived codebases. Compliance-ready for EU AI Act (August 2026), SOX, and PCI-DSS audit evidence.",
+  "version": "0.6.0",
+  "repository": {
+    "url": "https://github.com/Amitshukla2308/Index-the-code",
+    "source": "github",
+    "subfolder": "serve"
+  },
+  "websiteUrl": "https://carlsbert.tunnelthemvp.in/journal/",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "hyperretrieval",
+      "version": "0.6.0",
+      "transport": {
+        "type": "sse",
+        "url": "http://127.0.0.1:8002/sse"
+      },
+      "environmentVariables": [
+        {
+          "name": "ARTIFACT_DIR",
+          "description": "Directory containing graph_with_summaries.json, vectors.lance, cochange_index.json, criticality_index.json, guardrails/",
+          "isRequired": true
+        },
+        {
+          "name": "EMBED_SERVER_URL",
+          "description": "URL of the embedding inference server (default: http://localhost:8001)",
+          "isRequired": false,
+          "default": "http://localhost:8001"
+        },
+        {
+          "name": "HR_RERANKER",
+          "description": "Cross-encoder reranker mode: 'bge' | 'noop' | '' (default: off)",
+          "isRequired": false
+        },
+        {
+          "name": "HR_PROVENANCE_BACKEND",
+          "description": "AI-code provenance backend: 'git-notes' | 'json' | 'off' (default: git-notes)",
+          "isRequired": false,
+          "default": "git-notes"
+        },
+        {
+          "name": "HR_GUARD_PATH",
+          "description": "Path to the Guard prototype for pattern checks (optional)",
+          "isRequired": false
+        }
+      ],
+      "runtimeHint": "uvicorn",
+      "packageArguments": []
+    }
+  ],
+  "_meta": {
+    "io.github.amitshukla2308/hyperretrieval": {
+      "tools_exposed": 15,
+      "highlights": [
+        "15 MCP tools (vs competitors' 1-7)",
+        "Blast Radius v2 with activity-weighted reranking (+322% recall@10)",
+        "TurboQuant 7.7x vector compression (312MB deployable index)",
+        "Auto-generated guardrail docs + chat auto-surface",
+        "AI-code provenance consumption (Git AI / Agent Blame / Tabnine)",
+        "Compliance-ready: EU AI Act (Aug 2026), SOX, PCI-DSS"
+      ],
+      "status": "DRAFT — do not submit yet",
+      "submission_blockers": [
+        "pip package 'hyperretrieval' not yet on PyPI — packages[].registryType=pypi presumes it exists",
+        "No public OSS license file at Amitshukla2308/Index-the-code yet (schema requires for broader discovery)",
+        "HR currently needs an ARTIFACT_DIR pre-built from build/ pipeline — registry should surface this as a setup step, not a silent failure",
+        "Amit's OK on external submission (inverted permission list requires no-OK, but this touches personal-account repo visibility)"
+      ],
+      "roadmap_to_submission": [
+        "1. Package HR as `pip install hyperretrieval` (pyproject.toml exists, need PyPI token)",
+        "2. Ship LICENSE file (MIT recommended for broadest adoption)",
+        "3. Add `hr-serve` CLI entrypoint that starts both embed + mcp servers with one command",
+        "4. Ship a tiny 'demo_artifact/' in the pip package so first-run doesn't need build/ pipeline",
+        "5. Submit to official MCP Registry via the publish API at registry.modelcontextprotocol.io"
+      ]
+    }
+  }
+}

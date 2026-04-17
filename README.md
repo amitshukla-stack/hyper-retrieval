@@ -10,6 +10,26 @@ Point it at your source repos, run the build pipeline once, and AI tools in your
 
 ---
 
+## Try it in 60 seconds — no GPU, no config
+
+Analyze any public GitHub repo's blast radius from its git history:
+
+```bash
+git clone https://github.com/Amitshukla2308/Index-the-code
+cd Index-the-code
+pip install -e .
+python3 apps/cli/demo.py https://github.com/your-org/your-repo
+open hr-demo-report.html
+```
+
+You get an HTML report of the highest blast-radius files — ranked by how many times they've historically triggered co-changes across the codebase. No embedding server, no GPU, no 15-minute pipeline. Just git history.
+
+**On Flask:** `src/flask/app.py` scores 1120 — the single most-coupled file. Correct, and immediately useful.
+
+For full MCP tool integration (15 tools, criticality scoring, Guard static checks, cross-repo coupling) → see [Setup](#setup) below.
+
+---
+
 ## What ships in this repo
 
 - **15 MCP tools** — plug directly into Claude Code, Cursor, Windsurf, and GitHub Copilot Agent Mode

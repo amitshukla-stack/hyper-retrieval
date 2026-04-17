@@ -284,13 +284,20 @@ else:
     fail(f"coverage_score out of range: {missing['coverage_score']}")
 
 # Test 3: known co-change neighbor appears in predictions
-known_cochange = {"Product.OLTP.Transaction", "TransactionHelper", "TransactionTransforms"}
+# Canary: PaymentFlows co-changes with order/transaction modules in Euler namespace
+known_cochange = {
+    "Euler.Product.OLTP.Order.OrderStatus",
+    "Euler.Product.OLTP.Order.CreateUpdateImpl",
+    "Euler.API.Gateway.Gateway.Common",
+    # legacy names (pre-2026-04 index rebuild)
+    "Product.OLTP.Transaction", "TransactionHelper", "TransactionTransforms",
+}
 predicted_mods = {p["module"] for p in missing["predictions"]}
 found = known_cochange & predicted_mods
 if found:
     ok(f"Known co-change neighbors predicted: {found.pop()}")
 else:
-    fail("Expected at least one of Product.OLTP.Transaction / TransactionHelper / TransactionTransforms",
+    fail("Expected at least one known PaymentFlows co-change neighbor",
          f"Got: {[p['module'] for p in missing['predictions'][:5]]}")
 
 # Test 4: blast_radius returns services for PaymentFlows

@@ -12,12 +12,16 @@ Point it at your source repos, run the build pipeline once, and AI tools in your
 
 ## What ships in this repo
 
-- **12 MCP tools** — plug directly into Claude Code, Cursor, and Windsurf
+- **15 MCP tools** — plug directly into Claude Code, Cursor, Windsurf, and GitHub Copilot Agent Mode
+- **Guardrails** — auto-generated "what must stay true" + "review checklist" docs for critical modules, surfaced in chat and accessible via 3 dedicated MCP tools
+- **Criticality scoring** — every module gets a 0-1 score (blast radius + cross-repo coupling + recency + change frequency); used for risk-aware rerank in `unified_search`
 - **Cursor IDE plugin** — zero-config marketplace plugin (`plugins/cursor/`)
-- **Chat UI** (Chainlit) — engineers ask architecture questions in plain English
+- **Chat UI** (Chainlit) — engineers ask architecture questions in plain English; guardrails auto-surface when the answer touches a critical module
 - **HRCode CLI** — AI coding assistant with 20 tools, 26 slash commands, persistent memory
 - **Guardian Mode** — PR completeness analysis: blast radius, risk scoring, suggested reviewers, CI/CD GitHub Action
 - **Blast Radius v2** — activity-weighted impact analysis; **recall@10 0.47** vs 0.11 for static-only (+322%)
+- **TurboQuant vector compression** — 7.7x storage reduction at 3-bit (312MB vs 1.5GB), recall@10 preserved at 0.91 — makes HR deployable on standard dev laptops
+- **Pluggable cross-encoder reranker** — `BAAI/bge-reranker-v2-m3` hook into `unified_search`, env-gated (`HR_RERANKER=bge`)
 - **14-stage build pipeline** — indexes any multi-service codebase in one run
 
 ---
@@ -63,7 +67,7 @@ HyperRetrieval indexes your codebase into complementary data structures:
 
 ---
 
-## MCP tools (12)
+## MCP tools (15)
 
 Add to `.mcp.json` in your project root:
 
@@ -93,6 +97,9 @@ Works with Claude Code, Cursor, and Windsurf.
 | `check_my_changes` | Guardian Mode: blast radius + missing changes + risk score + reviewers in one call. |
 | `suggest_reviewers` | Module ownership from git history — who should review these files? |
 | `score_change_risk` | Composite risk score (0-100): blast radius + coverage gap + reviewer concentration + service spread. |
+| `check_criticality` | Criticality score + risk level (LOW/MEDIUM/HIGH/CRITICAL) + signals for one or more modules. |
+| `get_guardrails` | Full guardrail document for a module — "what must stay true", "review checklist", blast radius, reviewers. |
+| `list_critical_modules` | Top-N critical modules, optionally filtered by service or threshold — for architecture audits. |
 | `get_context` | **Last resort.** Large context block. Use only if targeted searches failed. |
 
 **Optimal chain:** `search_modules -> get_module -> get_function_body -> trace_callees`

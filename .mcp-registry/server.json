@@ -65,7 +65,7 @@
       ],
       "status": "DRAFT — do not submit yet",
       "submission_blockers": [
-        "pip package 'hyperretrieval' not yet on PyPI — packages[].registryType=pypi presumes it exists",
+        "pip package 'hyperretrieval' not yet PUBLISHED to PyPI (packaging VERIFIED 2026-04-17 c15 — pip install -e . works, 3 entry scripts install, serve imports; needs PyPI token + upload)",
         "HR currently needs an ARTIFACT_DIR pre-built from build/ pipeline — registry should surface this as a setup step, not a silent failure",
         "Amit's OK on external submission (inverted permission list requires no-OK, but this touches personal-account repo visibility)"
       ],

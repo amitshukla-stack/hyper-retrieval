@@ -395,6 +395,68 @@ def predict_missing_changes(changed_files: list[str], min_confidence: float = 0.
 
 # ── Learned-rules helpers (T-030 Phase 3) ─────────────────────────────────────
 
+# Session-scoped prediction cache for passive signal capture (T-032)
+# key=file_set_hash → {ts, predictions: [{module, confidence}]}
+_prediction_cache: dict[str, dict] = {}
+_PREDICTION_TTL = 86400  # 24h — one working day per PR context
+
+
+def _file_set_key(files: list[str]) -> str:
+    """Stable hash for a sorted list of basenames (same as rule normalisation)."""
+    basenames = sorted(f.split("/")[-1].lower() for f in files)
+    import hashlib
+    return hashlib.md5("|".join(basenames).encode()).hexdigest()[:12]
+
+
+def _passive_signal_check(input_files: list[str], new_predictions: list[dict]) -> None:
+    """Check prior predictions against current input_files; write passive signals if acted on.
+
+    Looks for cache entries whose file set OVERLAPS with (is a subset of) the current input.
+    Added files = current_basenames - prior_basenames. If a predicted module matches an
+    added file, it was acted on → positive signal.
+    """
+    now = time.time()
+    current_bases = {f.split("/")[-1].lower() for f in input_files}
+    key = _file_set_key(input_files)
+
+    for _k, prior in list(_prediction_cache.items()):
+        if now - prior["ts"] >= _PREDICTION_TTL:
+            continue
+        prior_bases = set(prior.get("input_bases", []))
+        if not prior_bases or not (prior_bases & current_bases):
+            continue  # no overlap — different PR context
+        added = current_bases - prior_bases
+        if not added:
+            continue  # nothing was added; no acted-on predictions possible
+        for pred in prior.get("predictions", []):
+            pred_base = pred["module"].split(".")[-1].lower()
+            if any(pred_base in a for a in added):
+                _write_passive_signal(input_files, pred["module"])
+
+    # Store current call in cache
+    _prediction_cache[key] = {
+        "ts": now,
+        "predictions": new_predictions,
+        "input_bases": list(current_bases),
+    }
+
+
+def _write_passive_signal(input_files: list[str], acted_module: str) -> None:
+    """Write a passive helpful signal when a predicted missing file was subsequently added."""
+    feedback_dir = Path.home() / ".hyperretrieval"
+    feedback_dir.mkdir(exist_ok=True)
+    entry = {
+        "ts": time.time(),
+        "tool": "check_my_changes",
+        "query": json.dumps(sorted(input_files))[:500],
+        "signal": "helpful",
+        "result_summary": f"Passive: predicted {acted_module} was subsequently added to changeset",
+        "context": "auto-captured",
+    }
+    with open(feedback_dir / "feedback_signals.jsonl", "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 def _load_active_rules() -> list[dict]:
     """Load ~/.hyperretrieval/active_rules.json; return [] if missing or invalid."""
     rules_path = Path.home() / ".hyperretrieval" / "active_rules.json"
@@ -460,6 +522,8 @@ def check_my_changes(changed_files: list[str]) -> str:
 
     coverage = missing.get("coverage_score", 1.0)
     predictions = missing.get("predictions", [])
+    # T-032: passive signal check — detects acted-on prior predictions
+    _passive_signal_check(changed_files, [{"module": p["module"], "confidence": p.get("confidence", 0)} for p in predictions])
     n_services = len(blast["affected_services"])
     all_affected = changed_mods + [n["module"] for n in blast["import_neighbors"]]
     _sec_kw = {"auth", "token", "credential", "secret", "password",

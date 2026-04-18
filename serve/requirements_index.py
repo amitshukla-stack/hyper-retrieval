@@ -77,6 +77,19 @@ def initialize() -> bool:
 
     _req_meta = json.loads(REQUIREMENTS_JSON.read_text())
 
+    # Warn if requirements index is stale relative to the main graph
+    graph_path = ARTIFACT_DIR / "graph_with_summaries.json"
+    if graph_path.exists():
+        req_age = REQUIREMENTS_JSON.stat().st_mtime
+        graph_age = graph_path.stat().st_mtime
+        if graph_age > req_age + 3600:  # graph rebuilt > 1h after requirements
+            import warnings
+            warnings.warn(
+                "requirements.json is older than graph_with_summaries.json by "
+                f"{(graph_age - req_age)/3600:.1f}h — rebuild with build/11_build_requirements.py",
+                stacklevel=2,
+            )
+
     if REQUIREMENTS_LANCE.exists():
         _lance_tbl = _load_lance()
 

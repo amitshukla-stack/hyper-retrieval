@@ -810,6 +810,29 @@ def fast_search_reranked(query: str, top_k: int = 10) -> str:
 
 
 @mcp.tool()
+def search_requirements(query: str, k: int = 5) -> str:
+    """
+    Search for functional requirement clusters matching a behavioral or flow question.
+
+    Use this when the user asks HOW something works, not WHERE a specific module is.
+    Examples:
+      'How does retry logic work?'
+      'What happens when a payment fails?'
+      'Which modules handle session management?'
+
+    Returns requirement clusters — groups of modules that together implement a behavior.
+    Each cluster shows: requirement description, confidence, modules involved, key functions.
+
+    Requires: run `python3 build/11_build_requirements.py --embed` first.
+
+    Args:
+        query:  Behavioral or flow question in natural language
+        k:      Max clusters to return (default 5)
+    """
+    return T.tool_search_requirements(query, k)
+
+
+@mcp.tool()
 def get_why_context(symbol_name: str) -> str:
     """
     WHY context for a module or symbol: ownership, activity trend, Granger causal

@@ -370,6 +370,25 @@ AGENT_TOOLS = [
         }, "required": ["query"]}
     }},
     {"type": "function", "function": {
+        "name": "search_requirements",
+        "description": (
+            "Search for functional requirement clusters that match a behavioral or flow query.\n\n"
+            "Use this when the user asks HOW something works, not WHERE a specific symbol is:\n"
+            "- 'How does retry logic work?'\n"
+            "- 'What happens when a payment fails?'\n"
+            "- 'Which modules handle authentication?'\n\n"
+            "Returns requirement clusters — groups of modules that together implement a behavior. "
+            "Each cluster has a one-sentence requirement description, confidence score, "
+            "and the module names involved.\n\n"
+            "Requires the requirements index to be built (build/11_build_requirements.py --embed). "
+            "Falls back gracefully if index is absent."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Behavioral or flow question in natural language"},
+            "k":     {"type": "integer", "description": "Max clusters to return (default 5)"}
+        }, "required": ["query"]}
+    }},
+    {"type": "function", "function": {
         "name": "get_why_context",
         "description": (
             "Returns WHY context for a module or symbol: ownership history, activity trend, "
@@ -921,6 +940,25 @@ def tool_fast_search_reranked(query: str, top_k: int = 10) -> str:
     return "\n".join(lines)
 
 
+def tool_search_requirements(query: str, k: int = 5) -> str:
+    """Search requirement-graph clusters for behavioral/flow queries."""
+    try:
+        import sys, os
+        _serve = os.path.join(os.path.dirname(__file__), "serve")
+        if _serve not in sys.path:
+            sys.path.insert(0, _serve)
+        import requirements_index as RI
+        if not RI.is_ready():
+            RI.initialize()
+        if not RI.is_ready():
+            return ("search_requirements index not built yet. "
+                    "Run: python3 build/11_build_requirements.py --embed")
+        clusters = RI.search_requirements(query, k=k)
+        return RI.format_for_mcp(clusters)
+    except Exception as e:
+        return f"search_requirements error: {e}"
+
+
 def tool_get_why_context(symbol_name: str) -> str:
     """WHY context: ownership, activity trend, Granger causality, anti-patterns."""
     data = RE.get_why_context(symbol_name)
@@ -1323,6 +1361,7 @@ TOOL_DISPATCH: dict = {
     "get_log_patterns":      lambda a: tool_get_log_patterns(a.get("fn_id","")),
     "fast_search":           lambda a: tool_fast_search(a.get("query",""), int(a.get("top_k", 10))),
     "fast_search_reranked":  lambda a: tool_fast_search_reranked(a.get("query",""), int(a.get("top_k", 10))),
+    "search_requirements":   lambda a: tool_search_requirements(a.get("query",""), int(a.get("k", 5))),
     "get_why_context":       lambda a: tool_get_why_context(a.get("symbol_name","")),
     "search_symbols":        lambda a: tool_search_symbols(a.get("query",""), a.get("service",""), a.get("brief", False)),
     "search_modules":        lambda a: tool_search_modules(a.get("query",""), a.get("service","")),

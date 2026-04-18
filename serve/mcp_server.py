@@ -890,6 +890,56 @@ def get_context(
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# FEEDBACK SIGNAL CAPTURE (T-030)
+# ════════════════════════════════════════════════════════════════════════════
+
+@mcp.tool()
+def record_feedback(
+    tool_name: str,
+    query: str,
+    signal: str,
+    result_summary: str = "",
+    context: str = "",
+) -> str:
+    """Record whether a HyperRetrieval result was helpful.
+
+    Captures feedback signals for future rule-learning (Bugbot-style).
+    Signals accumulate into learned rules that improve future results.
+
+    Args:
+        tool_name: Which tool produced the result (e.g. 'check_my_changes', 'get_blast_radius')
+        query: The query or file list that was searched
+        signal: 'helpful' or 'not_helpful'
+        result_summary: Brief description of what the tool returned (optional)
+        context: Additional context, e.g. PR URL or task description (optional)
+    """
+    import time
+    if signal not in ("helpful", "not_helpful"):
+        return f"Invalid signal '{signal}'. Use 'helpful' or 'not_helpful'."
+
+    feedback_dir = Path.home() / ".hyperretrieval"
+    feedback_dir.mkdir(exist_ok=True)
+    signals_path = feedback_dir / "feedback_signals.jsonl"
+
+    entry = {
+        "ts": time.time(),
+        "tool": tool_name,
+        "query": query[:500],
+        "signal": signal,
+        "result_summary": result_summary[:300] if result_summary else "",
+        "context": context[:300] if context else "",
+    }
+    with open(signals_path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+    total = sum(1 for _ in open(signals_path))
+    return (
+        f"Feedback recorded: {signal} for {tool_name}.\n"
+        f"Total signals: {total} | File: {signals_path}"
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # ENTRYPOINT
 # ════════════════════════════════════════════════════════════════════════════
 

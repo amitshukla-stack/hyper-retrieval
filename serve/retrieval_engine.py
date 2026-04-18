@@ -1245,6 +1245,46 @@ def predict_missing_changes(changed_modules: list, min_weight: int = 5,
     predictions.sort(key=lambda x: (-x["confidence"], -x["weight"]))
     predictions = predictions[:top_k]
 
+    # T-033d: Granger-exclusive augmentation — append causal targets not already in CC top-K.
+    # T-033c showed additive fusion hurts (-5% recall), but Granger-exclusive candidates
+    # contribute ~2-3% unique recall. We recover this by appending after CC top-K, not mixing.
+    if granger_index or granger_cross_index:
+        cc_predicted = {p["module"] for p in predictions}
+        granger_extras: list[tuple[float, str, str]] = []  # (f_stat, module, direction_label)
+        for src_mod in changed_set:
+            cc_src = _resolve_cc(src_mod)
+            for gi in (granger_index, granger_cross_index):
+                if gi is None:
+                    continue
+                for key, pair in gi.items():
+                    if pair.get("source") != cc_src:
+                        continue
+                    tgt = _resolve_mg(pair["target"])
+                    if tgt in changed_set or tgt in cc_predicted:
+                        continue
+                    f_stat = pair.get("f_statistic", pair.get("weight", 1000) / 500)
+                    direction = f"{cc_src.split('::')[-1]}→{pair['target'].split('::')[-1]}"
+                    granger_extras.append((f_stat, tgt, direction))
+        # De-dup by module, keep best f_stat; limit to 3 augmentation slots
+        seen: dict[str, tuple[float, str]] = {}
+        for f, mod, direction in granger_extras:
+            if mod not in seen or f > seen[mod][0]:
+                seen[mod] = (f, direction)
+        augment = sorted(seen.items(), key=lambda x: -x[1][0])[:3]
+        for mod, (f_stat, direction) in augment:
+            svc = ""
+            if MG is not None and mod in MG.nodes:
+                svc = MG.nodes[mod].get("service", "")
+            predictions.append({
+                "module": mod,
+                "reason": f"Granger causal prediction: {direction} (f={f_stat:.2f})",
+                "weight": 0,
+                "confidence": round(min(0.4, f_stat / 25), 3),
+                "service": svc,
+                "source_count": 1,
+                "granger_exclusive": True,
+            })
+
     # Coverage score: what fraction of expected changes are actually in the changeset
     total_expected = len(changed_set) + len([p for p in predictions if p["confidence"] > 0.3])
     coverage = len(changed_set) / total_expected if total_expected > 0 else 1.0

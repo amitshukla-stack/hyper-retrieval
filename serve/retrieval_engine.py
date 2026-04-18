@@ -349,6 +349,18 @@ def initialize(
                 db = lancedb.connect(LANCE_PATH)
                 lance_tbl = db.open_table("chunks")
                 print(f"  {len(lance_tbl):,} vectors @ 4096d")
+                # Detect embedding model from metadata (prevents silent mixed-model bugs)
+                try:
+                    _schema_names = lance_tbl.schema.names if hasattr(lance_tbl, "schema") else []
+                    if "embedding_model" in _schema_names:
+                        _sample = lance_tbl.head(1).to_pydict()
+                        _em = _sample.get("embedding_model", ["unknown"])[0]
+                        _ev = _sample.get("embedding_version", ["unknown"])[0]
+                        print(f"  Embedding model: {_ev}")
+                    else:
+                        print("  Embedding model: unknown (pre-metadata build)")
+                except Exception:
+                    pass
             except (ValueError, FileNotFoundError, OSError) as e:
                 lance_tbl = None
                 print(f"  vectors.lance: not available ({e}) — keyword-only mode")

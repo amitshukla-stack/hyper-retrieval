@@ -118,6 +118,12 @@ def write_lancedb(nodes, raw_texts, embeddings):
     print(f"  Temp path (native ext4): {LANCE_TMP}")
 
     db    = lancedb.connect(str(LANCE_TMP))
+    _embed_model = MODEL_PATH.name  # e.g. "qwen3-embed-8b"
+    _embed_provider = os.environ.get("EMBED_PROVIDER", "local")
+    # Cloud providers may override the model name via EMBED_MODEL_NAME
+    _embed_model_id = os.environ.get("EMBED_MODEL_NAME", _embed_model)
+    _embed_version = f"{_embed_provider}/{_embed_model_id}"
+
     records = [
         {
             "id":              n["id"],
@@ -133,6 +139,8 @@ def write_lancedb(nodes, raw_texts, embeddings):
             "cluster_purpose": n.get("cluster_purpose", ""),
             "summary":         n.get("summary", ""),
             "file":            n.get("file", ""),
+            "embedding_model": _embed_model_id,
+            "embedding_version": _embed_version,
         }
         for i, n in enumerate(nodes)
     ]

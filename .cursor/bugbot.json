@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hyperretrieval": {
+      "type": "sse",
+      "url": "http://localhost:8002/sse",
+      "description": "HyperRetrieval code intelligence: blast radius, guardrails, ownership, and behavioral requirement search for your codebase."
+    }
+  }
+}

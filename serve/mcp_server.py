@@ -393,6 +393,34 @@ def predict_missing_changes(changed_files: list[str], min_confidence: float = 0.
     return "\n".join(lines)
 
 
+# ── Learned-rules helpers (T-030 Phase 3) ─────────────────────────────────────
+
+def _load_active_rules() -> list[dict]:
+    """Load ~/.hyperretrieval/active_rules.json; return [] if missing or invalid."""
+    rules_path = Path.home() / ".hyperretrieval" / "active_rules.json"
+    if not rules_path.exists():
+        return []
+    try:
+        with open(rules_path) as f:
+            data = json.load(f)
+        return [r for r in data.get("rules", []) if r.get("status") == "active"]
+    except Exception:
+        return []
+
+
+def _lookup_rules(tool: str, input_files: list[str]) -> list[dict]:
+    """Return active rules for this tool whose query_files overlap with input_files."""
+    input_set = {f.split("/")[-1].lower() for f in input_files}
+    matched = []
+    for rule in _load_active_rules():
+        if rule.get("tool") != tool:
+            continue
+        rule_files = {f.split("/")[-1].lower() for f in rule.get("query_files", [])}
+        if rule_files and rule_files & input_set:
+            matched.append(rule)
+    return matched
+
+
 @mcp.tool()
 def check_my_changes(changed_files: list[str]) -> str:
     """
@@ -549,6 +577,16 @@ def check_my_changes(changed_files: list[str]) -> str:
         lines.append("\n*Review the warnings above before committing.*")
     else:
         lines.append("\n*Your changeset is likely incomplete. Add the missing files or confirm they are intentionally excluded.*")
+
+    # Inject learned context from feedback loop (T-030)
+    learned = _lookup_rules("check_my_changes", changed_files)
+    if learned:
+        lines.append("\n### Learned Context (from past reviews)")
+        for r in learned[:3]:
+            conf_pct = f"{r['confidence']:.0%}"
+            lines.append(f"  - {r['label']}: {r['positive']}/{r['total']} reviewers found this helpful ({conf_pct} confidence)")
+            for s in r.get("sample_summaries", [])[:1]:
+                lines.append(f"    *\"{s}\"*")
 
     return "\n".join(lines)
 

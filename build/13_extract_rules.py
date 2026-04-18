@@ -72,9 +72,10 @@ def _human_label(tool: str, query: str) -> str:
 class RuleExtractor:
     def __init__(self, min_signals: int = PROMOTE_MIN_SIGNALS):
         self.min_signals = min_signals
-        # key → {"tool", "label", "positive", "negative", "last_ts", "summaries"}
+        # key → {"tool", "label", "query_files", "positive", "negative", "last_ts", "summaries"}
         self._groups: dict[str, dict] = defaultdict(lambda: {
-            "tool": "", "label": "", "positive": 0, "negative": 0,
+            "tool": "", "label": "", "query_files": [],
+            "positive": 0, "negative": 0,
             "last_ts": 0.0, "summaries": [],
         })
 
@@ -86,6 +87,8 @@ class RuleExtractor:
         g      = self._groups[key]
         g["tool"]  = tool
         g["label"] = _human_label(tool, query)
+        if not g["query_files"]:
+            g["query_files"] = _extract_files(query)
         if signal == "helpful":
             g["positive"] += 1
         elif signal == "not_helpful":
@@ -122,15 +125,16 @@ class RuleExtractor:
             )
 
             out.append({
-                "id":         key,
-                "tool":       g["tool"],
-                "label":      g["label"],
-                "positive":   g["positive"],
-                "negative":   g["negative"],
-                "total":      total,
-                "confidence": round(confidence, 3),
-                "status":     status,
-                "last_seen":  last_seen,
+                "id":           key,
+                "tool":         g["tool"],
+                "label":        g["label"],
+                "query_files":  g["query_files"],
+                "positive":     g["positive"],
+                "negative":     g["negative"],
+                "total":        total,
+                "confidence":   round(confidence, 3),
+                "status":       status,
+                "last_seen":    last_seen,
                 "sample_summaries": g["summaries"][:3],
             })
 

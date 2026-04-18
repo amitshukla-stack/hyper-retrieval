@@ -476,7 +476,10 @@ def initialize(
             print(f"  {meta_gi.get('significant_results', 0):,} causal pairs  "
                   f"(p<{meta_gi.get('p_threshold', 0.05)})")
 
-        granger_cross_path = artifact_dir / "granger_cross_index.json"
+        # Prefer lag-10 index (T-019: 100% significant, stronger signal at high lags)
+        granger_cross_path = artifact_dir / "granger_cross_lag10_index.json"
+        if not granger_cross_path.exists():
+            granger_cross_path = artifact_dir / "granger_cross_index.json"
         if granger_cross_path.exists():
             print("Loading cross-service Granger index...")
             with open(str(granger_cross_path)) as _f:

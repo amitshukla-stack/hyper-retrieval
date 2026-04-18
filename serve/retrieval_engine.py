@@ -1136,6 +1136,19 @@ def get_blast_radius(module_names: list, max_hops: int = 2) -> dict:
     }
     if community_context:
         result["community_context"] = community_context
+
+    # T-025 finding: co-change prediction reliability degrades with changeset size.
+    # Tiny (2-5 modules): ~50% coverage. Large (26-100): ~42%. Huge (101+): ~40%.
+    n_seed = len(seed)
+    if n_seed >= 20:
+        if n_seed >= 50:
+            note = (f"Large changeset ({n_seed} modules). Co-change predictions ~40% reliable "
+                    "at this scale — focused PRs (2-5 files) reach ~50%. Consider splitting.")
+        else:
+            note = (f"Mid-size changeset ({n_seed} modules). Co-change predictions ~43% reliable "
+                    "here vs ~50% for focused PRs. Review tiered_impact carefully.")
+        result["precision_note"] = note
+
     return result
 
 

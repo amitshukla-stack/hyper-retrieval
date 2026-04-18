@@ -158,17 +158,50 @@ Add `.mcp.json` to your project and your AI assistant has all 15 tools.
 
 ---
 
-## Guardian Mode — CI/CD
+## Guardian Mode — 0.2s setup, any repo
+
+No GPU. No API key. No AST parser. Just a git repo.
 
 ```bash
-# PR completeness analysis from the command line
-git diff main...HEAD --name-only | python3 serve/pr_analyzer.py
-
-# Zero-config guardian on any repo (no GPU, no AST)
-python3 apps/cli/guardian_init.py --repo /path/to/repo
+# Initialize on any repo — reads only git history
+python3 apps/cli/guardian_init.py --repo /path/to/your/repo
 ```
 
-Copy `.github/workflows/guardian-lite.yml` to any repo for automatic PR risk scoring.
+Output in 0.2 seconds:
+```
+Guardian initialized for: /path/to/your/repo
+  Co-change index: 2,847 module pairs (from 4,219 commits)
+  Ownership index: 187 authors, 634 modules
+  Artifacts: .hyperretrieval/artifacts/
+  Ready for: pr_analyzer.py, get_blast_radius, suggest_reviewers
+```
+
+**Why this matters**: Static analysis tools need AST parsers, language-specific rules, and 30+ seconds of setup per repo. Guardian reads git history — which every repo already has, in every language, with no configuration.
+
+### Add to CI in 3 steps
+
+```bash
+# Step 1: Initialize (once per repo)
+python3 apps/cli/guardian_init.py --repo .
+
+# Step 2: Analyze a PR
+git diff main...HEAD --name-only | python3 serve/pr_analyzer.py \
+  --artifact-dir .hyperretrieval/artifacts
+
+# Step 3: Add the GitHub Action (copy once, works forever)
+cp .github/workflows/guardian-lite.yml /path/to/your/repo/.github/workflows/
+```
+
+The Action runs on every PR, posts a risk score comment, and flags missing changes from the co-change history. Zero secrets required.
+
+### What Guardian catches (without reading a line of code)
+
+| Signal | How | Example finding |
+|--------|-----|----------------|
+| Missing co-changes | Git history | "src/auth.py changed — src/session.py changed in 73% of prior PRs. Not in this PR." |
+| Blast radius | Import + co-change | "This touches 3 services. 8 cross-service callers historically affected." |
+| Reviewer suggestions | `git blame` ownership | "3 engineers own 80% of these files. None are in this PR's reviewers." |
+| Granger causality | Commit sequence | "Changes to payments/ historically precede changes to fraud/ within 3 commits." |
 
 ---
 

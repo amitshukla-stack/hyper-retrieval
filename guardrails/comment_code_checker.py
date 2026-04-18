@@ -593,6 +593,41 @@ def check_silent_state_mutation(source: str, filename: str = "<stdin>") -> list[
     return findings
 
 
+def check_card_data_logging(source: str, filename: str = "<stdin>") -> list[Finding]:
+    """Detect PCI-DSS violations: logging card numbers, CVVs, or raw card data."""
+    findings = []
+    lines = source.split("\n")
+    # Variables that likely hold PCI-sensitive data
+    card_var_re = re.compile(
+        r"\b(card_?number|pan|cvv|cvc|card_?data|credit_?card|card_?no|"
+        r"card_?details|raw_?card|track[12]_?data|card_?token)\b",
+        re.IGNORECASE,
+    )
+    # Logging / printing calls
+    log_call_re = re.compile(
+        r"\b(print|log\.|logger\.|logging\.|console\.|printf|sprintf|format|"
+        r"f['\"].*\{|str\(|repr\(|json\.dumps)\b",
+        re.IGNORECASE,
+    )
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if card_var_re.search(line) and log_call_re.search(line):
+            findings.append(Finding(
+                file=filename, line=i + 1,
+                pattern="card-data-logging",
+                severity="critical",
+                message=(
+                    "Potential PCI-DSS violation: card data variable passed to a "
+                    "logging or print call. Card numbers/CVVs must never appear in logs."
+                ),
+                comment=_find_nearby_comment(lines, i),
+                code=stripped,
+            ))
+    return findings
+
+
 def check_file(filepath: str) -> list[Finding]:
     """Run all checks on a file and apply directory-based severity stratification."""
     source = Path(filepath).read_text()
@@ -607,6 +642,7 @@ def check_file(filepath: str) -> list[Finding]:
     findings.extend(check_missing_idempotency_key(source, filepath))
     findings.extend(check_unbounded_retry(source, filepath))
     findings.extend(check_silent_state_mutation(source, filepath))
+    findings.extend(check_card_data_logging(source, filepath))
     return [_stratify(f) for f in findings]
 
 

@@ -87,10 +87,10 @@ hr-embed = "serve.embed_server:main"
 hr-pr = "apps.cli.pr_analyzer:main"
 
 [project.urls]
-Homepage = "https://carlsbert.tunnelthemvp.in/journal/"
-Documentation = "https://github.com/Amitshukla2308/Index-the-code#readme"
-Repository = "https://github.com/Amitshukla2308/Index-the-code"
-Issues = "https://github.com/Amitshukla2308/Index-the-code/issues"
+Homepage = "https://hyperretrieval.tunnelthemvp.in"
+Documentation = "https://github.com/Amitshukla2308/use-ripple#readme"
+Repository = "https://github.com/Amitshukla2308/use-ripple"
+Issues = "https://github.com/Amitshukla2308/use-ripple/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["build", "serve", "apps", "plugins", "tools"]

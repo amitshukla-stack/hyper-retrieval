@@ -12,7 +12,9 @@ runs as a separate service (embed_server.py). Both Chainlit and MCP server
 then share one GPU load via HTTP — no OOM.
 """
 import json, math, os, pathlib, re, time, threading, urllib.request, urllib.error
+import subprocess
 from collections import defaultdict
+from functools import lru_cache
 try:
     from rank_bm25 import BM25Okapi as _BM25Okapi
     _BM25_AVAILABLE = True
@@ -30,6 +32,11 @@ MAX_TOOL_CALLS = 12
 # When set, _encode_query calls this instead of loading the model in-process.
 # Allows Chainlit + MCP server to share one GPU load.
 EMBED_SERVER_URL = os.environ.get("EMBED_SERVER_URL", "")  # e.g. http://localhost:8001
+
+# Optional: path to a git repo root for Lore trailer extraction (arXiv 2603.15566)
+# When set, get_why_context will surface Lore-Constraint/Rejected/Directive/Verify trailers
+# from recent commits touching the queried module. Zero cost when unset.
+_LORE_REPO = os.environ.get("HR_LORE_PATH", "")
 
 EMBED_INSTRUCTION = (
     "Instruct: Represent this code module for finding semantically similar "
@@ -1654,6 +1661,46 @@ def list_critical_modules(service: str = None, threshold: float = 0.5, top_k: in
     }
 
 
+@lru_cache(maxsize=512)
+def _get_lore_signals(module_name: str) -> list:
+    """Parse Lore-* git trailers (arXiv 2603.15566) from recent commits.
+
+    Returns list of dicts with keys: type, value, commit_hash.
+    Requires HR_LORE_PATH env var pointing to a git repo root.
+    Returns [] silently if repo not configured or no trailers found.
+    """
+    if not _LORE_REPO or not pathlib.Path(_LORE_REPO).is_dir():
+        return []
+    # Map module name to a file path glob for git log search
+    # e.g. "Euler.API.Gateway.Flows" → "*Flows*"
+    stem = module_name.replace("::", ".").split(".")[-1]
+    path_glob = f"*{stem}*"
+    try:
+        result = subprocess.run(
+            ["git", "log", "--format=%H%x00%B%x01", "--max-count=20", "--", path_glob],
+            cwd=_LORE_REPO, capture_output=True, text=True, timeout=5
+        )
+        signals = []
+        _LORE_KEYS = {"Lore-Constraint": "constraint", "Lore-Rejected": "rejected",
+                      "Lore-Directive": "directive", "Lore-Verify": "verify"}
+        for chunk in result.stdout.split("\x01"):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            lines = chunk.splitlines()
+            commit_hash = lines[0][:8] if lines else ""
+            for line in lines[1:]:
+                for trailer, kind in _LORE_KEYS.items():
+                    if line.startswith(f"{trailer}:"):
+                        value = line[len(trailer) + 1:].strip()
+                        if value:
+                            signals.append({"type": kind, "value": value,
+                                            "commit": commit_hash})
+        return signals[:10]  # cap at 10 to keep output compact
+    except Exception:
+        return []
+
+
 def get_why_context(symbol_name: str) -> dict:
     """Return 'why' context for a module: ownership, activity trend, Granger causal
     relationships, criticality reasons, and anti-pattern flags.
@@ -1671,6 +1718,7 @@ def get_why_context(symbol_name: str) -> dict:
         "causal_outputs": [],
         "causal_inputs": [],
         "anti_patterns": [],
+        "lore_signals": [],  # Lore decision-record trailers (arXiv 2603.15566) if HR_LORE_PATH set
     }
 
     cc_key = _resolve_cc(symbol_name)
@@ -1770,6 +1818,14 @@ def get_why_context(symbol_name: str) -> dict:
             "this code is reactive. Consider stabilising its interface."
         )
     result["anti_patterns"] = anti
+
+    # Lore decision-record trailers (arXiv 2603.15566) — enrichment when HR_LORE_PATH is set
+    lore = _get_lore_signals(symbol_name)
+    if not lore:
+        lore = _get_lore_signals(cc_key)
+    if lore:
+        result["lore_signals"] = lore
+        result["found"] = True
 
     return result
 

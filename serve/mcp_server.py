@@ -104,17 +104,8 @@ def _startup():
 def search_symbols(query: str, service: str = "", brief: bool = False) -> str:
     """
     Find functions, types, and modules by name or concept. Start here for any code question.
-
-    Use brief=True for orientation (name+file, ~50 tokens/result), brief=False for full signatures.
-    Use service= to scope to one microservice (cuts noise 80%).
-    After finding an ID → get_function_body(); found a module path → get_module().
-    If results are test/harness code, retry with service= filter or a more specific query before
-    falling back to get_context.
-
-    Args:
-        query:   Natural language or identifier (e.g. "user authentication handler")
-        service: Optional — restrict to one service (e.g. "api-gateway")
-        brief:   True = name+file only. False = full signature (default)
+    brief=True for name+file only (~50 tokens). service= scopes to one microservice (cuts noise 80%).
+    After: found ID → get_function_body(); found module path → get_module().
     """
     return T.tool_search_symbols(query, service, brief)
 
@@ -238,16 +229,9 @@ def trace_callees(fn_id: str, reason: str = "") -> str:
 def get_blast_radius(files_or_modules: list[str], max_hops: int = 2) -> str:
     """
     Compute blast radius for changed files or modules.
-
-    Combines import graph (transitive dependents) + co-change history + cross-service Granger
-    causal predictions. Use before merging a PR or refactoring. Pass git diff --name-only output
-    directly — file paths are auto-resolved to modules.
+    Import graph + co-change history + cross-service Granger predictions.
+    Pass git diff --name-only directly — file paths auto-resolved.
     max_hops=1 for direct deps, max_hops=2 (default) for transitive.
-    For single-function impact, trace_callers is faster.
-
-    Args:
-        files_or_modules: File paths (from git diff) or module names. Both work.
-        max_hops: Import graph traversal depth (default: 2)
     """
     resolved   = RE.resolve_files_to_modules(files_or_modules)
     seed_mods  = []
@@ -316,14 +300,8 @@ def get_blast_radius(files_or_modules: list[str], max_hops: int = 2) -> str:
 def predict_missing_changes(changed_files: list[str], min_confidence: float = 0.1) -> str:
     """
     Predict modules likely MISSING from a changeset (PR review assistant).
-
-    Uses co-change history + cross-service Granger causality to surface files that typically
-    change together but are absent from the PR. High confidence = almost certainly forgotten.
-    Pass git diff --name-only output directly — file paths are auto-resolved.
-
-    Args:
-        changed_files: File paths (from git diff) or module names. Both work.
-        min_confidence: Minimum confidence threshold (0-1). Default 0.1.
+    Co-change + Granger causality — surfaces files that typically change together but aren't in this PR.
+    Pass git diff --name-only directly. High confidence = almost certainly forgotten.
     """
     resolved = RE.resolve_files_to_modules(changed_files)
     changed_mods = []
@@ -807,17 +785,8 @@ def get_context(
 ) -> str:
     """
     Full codebase context retrieval — LAST RESORT, 5,000–18,000 tokens per call.
-
-    Runs vector + keyword search + cluster summaries across services. Only call when
-    search_symbols returned no useful IDs AND you need cross-service architectural context.
-    Rules: (1) Must have called search_symbols first. (2) Never call twice in one turn.
-    (3) Always set services= to cut tokens 50-80%.
-
-    Args:
-        query:       Your question (natural language)
-        persona:     Leave as default
-        services:    Limit to specific services — cuts tokens 50-80% (e.g. ["api-gateway"])
-        max_symbols: Cap symbols per service (0 = no cap). Use 20-30 for large queries.
+    Only use when search_symbols returned no useful IDs AND cross-service context is needed.
+    Never call twice per turn. Always set services= to cut tokens 50-80%.
     """
     # Use unified_search (RRF fusion of dense vector + BM25 + co-change expansion)
     # instead of separate keyword + vector searches

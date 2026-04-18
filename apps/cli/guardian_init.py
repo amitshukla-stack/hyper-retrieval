@@ -107,6 +107,24 @@ def main():
     print(f"    --mode guardian --artifact-dir {artifact_dir} \\")
     print(f"    --files <changed_file1> <changed_file2>")
 
+    # Check for Lore decision-record trailers (arXiv 2603.15566)
+    # If none found in recent commits, suggest adoption for richer get_why_context output
+    try:
+        lore_check = subprocess.run(
+            ["git", "log", "--max-count=100", "--format=%B"],
+            cwd=str(repo), capture_output=True, text=True, timeout=5
+        )
+        has_lore = any(
+            trailer in lore_check.stdout
+            for trailer in ("Lore-Constraint:", "Lore-Directive:", "Lore-Rejected:", "Lore-Verify:")
+        )
+        if not has_lore:
+            print("\nTip: No Lore decision-record trailers found in recent commits.")
+            print("  Add 'Lore-Constraint: <why>' to commit messages to enrich get_why_context.")
+            print("  See arXiv 2603.15566 or set HR_LORE_PATH to enable in the MCP server.")
+    except Exception:
+        pass
+
 
 def _run_build_script(script: str, args: list):
     """Run a build script with the appropriate Python."""

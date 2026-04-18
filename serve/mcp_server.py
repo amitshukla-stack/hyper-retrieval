@@ -889,6 +889,60 @@ def get_context(
     return T._build_base_context(vec_by_svc, kw_by_svc, cluster_by_svc, persona, doc_hits)
 
 
+@mcp.tool()
+def check_alignment(file_path: str, language: str = None) -> str:
+    """
+    LLM-powered comment-code alignment check on a source file.
+
+    Extracts comment-code pairs (docstrings, inline comments before functions)
+    and asks an LLM whether the comment accurately describes what the code
+    actually does. Flags MISALIGNED (critical) or PARTIAL (warning) pairs.
+
+    MISALIGNED = code does the OPPOSITE or NOTHING of what the comment claims.
+    Not just imperfect implementation — active contradiction.
+
+    Supports: Python (.py), Rust (.rs), Haskell (.hs).
+    Requires LLM_API_KEY + LLM_BASE_URL environment variables.
+
+    Examples:
+      check_alignment("/path/to/payment_service.py")
+      check_alignment("/path/to/handler.rs", language="rust")
+    """
+    try:
+        import sys as _sys
+        _guard_dir = str(pathlib.Path(__file__).resolve().parents[1] / "guardrails")
+        if _guard_dir not in _sys.path:
+            _sys.path.insert(0, _guard_dir)
+        from llm_alignment_checker import check_llm_alignment
+    except ImportError as e:
+        return f"## check_alignment\nUnavailable: {e}\n"
+
+    try:
+        source = pathlib.Path(file_path).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return f"## check_alignment\nFile not found: {file_path}\n"
+
+    findings = check_llm_alignment(source, file_path, language=language)
+
+    if not findings:
+        return f"## Comment-Code Alignment: {pathlib.Path(file_path).name}\n\nAll comment-code pairs appear aligned. No issues found.\n"
+
+    lines = [f"## Comment-Code Alignment: {pathlib.Path(file_path).name}\n"]
+    n_crit = sum(1 for f in findings if f.severity == "critical")
+    n_warn = sum(1 for f in findings if f.severity == "warning")
+    lines.append(f"Found {len(findings)} issue(s): {n_crit} critical, {n_warn} warning\n")
+    for f in findings:
+        icon = "CRITICAL" if f.severity == "critical" else "WARNING"
+        lines.append(f"### [{icon}] Line {f.line} — {f.pattern}")
+        lines.append(f"{f.message}")
+        if f.comment:
+            lines.append(f"**Comment:** {f.comment}")
+        if f.code:
+            lines.append(f"**Code:** `{f.code[:80]}`")
+        lines.append("")
+    return "\n".join(lines)
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # ENTRYPOINT
 # ════════════════════════════════════════════════════════════════════════════

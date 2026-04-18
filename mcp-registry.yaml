@@ -1,0 +1,92 @@
+# MCP Registry manifest for registry.modelcontextprotocol.io
+# Submit at: https://registry.modelcontextprotocol.io/submit
+# Also submit to Glama: https://glama.ai/mcp/submit
+
+name: ripple
+display_name: HyperRetrieval (Ripple)
+version: "0.6.0"
+description: >
+  Temporal code intelligence for IDE agents. Indexes your git history into
+  co-change, criticality, blast-radius, and Granger-causal signals. 17 MCP tools
+  covering retrieval, graph traversal, PR review, Guard static analysis, and
+  auto-generated guardrails. Self-hosted. Your code never leaves your machines.
+author:
+  name: Amit Shukla
+  email: amitshukla2308@gmail.com
+  url: https://github.com/Amitshukla2308
+repository: https://github.com/Amitshukla2308/Index-the-code
+homepage: https://ripple.tunnelthemvp.in
+license: Apache-2.0
+categories:
+  - code-intelligence
+  - developer-tools
+  - static-analysis
+  - search
+tags:
+  - codebase-intelligence
+  - blast-radius
+  - co-change
+  - granger-causality
+  - mcp
+  - rag
+  - code-search
+  - guardrails
+  - self-hosted
+install:
+  pip: ripple[mcp]
+  run: ripple-mcp
+  stdio_command: ["ripple-mcp"]
+  http_command: ["ripple-mcp", "--http", "--port", "8002"]
+  env:
+    ARTIFACT_DIR:
+      description: Path to indexed artifacts directory (graph, vectors, co-change index)
+      required: true
+    EMBED_SERVER_URL:
+      description: URL of the embedding server (default http://localhost:8001)
+      required: false
+      default: "http://localhost:8001"
+tools:
+  - name: search_modules
+    description: Semantic search over module namespaces — start here for any new topic
+  - name: search_symbols
+    description: Semantic + keyword search for specific functions, types, and identifiers
+  - name: get_module
+    description: List all symbols in a module in one call
+  - name: get_function_body
+    description: Retrieve exact source code of a function by fully-qualified ID
+  - name: get_blast_radius
+    description: Import graph + co-change history for changed files; Granger causal predictions
+  - name: predict_missing_changes
+    description: Given changed files, surface files likely missing from the changeset
+  - name: check_my_changes
+    description: SDLC guardian — blast_radius + Guard + criticality + reviewers in one PASS/WARN/FAIL call
+  - name: check_criticality
+    description: Criticality score (0–1) for any module based on centrality + ownership + activity
+  - name: get_guardrails
+    description: Auto-generated guardrail document for a module — invariants, reviewers, risk factors
+  - name: get_why_context
+    description: WHY context — ownership, activity trend, Granger causal direction, anti-pattern flags
+  - name: fast_search
+    description: Zero-GPU BM25 keyword search, <50ms, for identifier/name lookups
+  - name: fast_search_reranked
+    description: BM25 + cross-encoder rerank, P@10=0.900, p95=84ms
+  - name: suggest_reviewers
+    description: Module ownership from git history — who should review changes?
+  - name: score_change_risk
+    description: Composite risk score (0–100) from blast radius + coverage + reviewer concentration
+  - name: trace_callers
+    description: Who calls this function (upstream impact)
+  - name: trace_callees
+    description: What this function calls (downstream dependencies)
+  - name: get_context
+    description: Full module context — use last resort after search_symbols
+benchmarks:
+  blast_radius_recall_at_10:
+    before: 0.11
+    after: 0.47
+    delta: "+327%"
+    dataset: "563 real commits"
+  fast_search_precision_at_10:
+    value: 0.900
+    latency_p95_ms: 84
+  guard_latency_ms_per_file: 2.4

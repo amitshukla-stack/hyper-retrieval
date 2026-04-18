@@ -83,6 +83,7 @@ all = [
 
 [project.scripts]
 ripple = "apps.cli.hrcode:main"
+ripple-mcp = "serve.mcp_server:main"
 hr-embed = "serve.embed_server:main"
 hr-pr = "apps.cli.pr_analyzer:main"
 

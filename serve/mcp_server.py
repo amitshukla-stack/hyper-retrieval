@@ -893,10 +893,14 @@ def get_context(
 # ENTRYPOINT
 # ════════════════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
+def main():
     _startup()
     if _args.http:
         print(f"[mcp_server] Starting HTTP/SSE server on http://127.0.0.1:{MCP_PORT}/sse", file=sys.stderr)
         mcp.run(transport="sse")
     else:
         mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

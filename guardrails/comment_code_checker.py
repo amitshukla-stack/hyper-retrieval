@@ -448,6 +448,151 @@ def _stratify(finding: "Finding") -> "Finding":
     return finding
 
 
+def check_float_for_money(source: str, filename: str = "<stdin>") -> list[Finding]:
+    """Detect float/double used for monetary amounts (should be Decimal or integer cents)."""
+    findings = []
+    lines = source.split("\n")
+    money_vars = r"(?:amount|price|total|balance|fee|tax|charge|refund|payment|cost|rate|subtotal|grand_total)"
+    float_decls = [
+        (r"(" + money_vars + r")\s*:\s*float\b", "type annotation"),
+        (r"def\s+\w+\s*\(.*(" + money_vars + r")\s*:\s*float", "function parameter"),
+        (r"=\s*float\s*\(\s*(" + money_vars + r")\s*\)", "explicit float() conversion"),
+        (r"(" + money_vars + r")\s*=\s*\d+\.\d+\b", "float literal assignment"),
+    ]
+    for i, line in enumerate(lines):
+        for pattern, desc in float_decls:
+            m = re.search(pattern, line, re.IGNORECASE)
+            if m:
+                findings.append(Finding(
+                    file=filename, line=i + 1,
+                    pattern="float-for-money",
+                    severity="warning",
+                    message=f"Monetary variable uses float ({desc}). Use Decimal or integer cents to avoid rounding errors.",
+                    comment=_find_nearby_comment(lines, i),
+                    code=line.strip(),
+                ))
+                break
+    return findings
+
+
+def check_timeout_without_backoff(source: str, filename: str = "<stdin>") -> list[Finding]:
+    """Detect bare timeout parameters in HTTP/API calls without retry-with-backoff."""
+    findings = []
+    lines = source.split("\n")
+    backoff_indicators = re.compile(
+        r"(?:Retry|backoff|tenacity|retry|max_retries|retries|exponential|sleep\s*\(|time\.sleep)",
+        re.IGNORECASE,
+    )
+    timeout_re = re.compile(r"\btimeout\s*=\s*\d+", re.IGNORECASE)
+    call_re = re.compile(r"(?:requests|httpx|aiohttp|urllib|session)\s*\.\s*(?:get|post|put|patch|delete)\s*\(")
+    for i, line in enumerate(lines):
+        if timeout_re.search(line) and call_re.search(line):
+            window_start = max(0, i - 15)
+            window_end = min(len(lines), i + 15)
+            context = "\n".join(lines[window_start:window_end])
+            if not backoff_indicators.search(context):
+                findings.append(Finding(
+                    file=filename, line=i + 1,
+                    pattern="timeout-without-backoff",
+                    severity="warning",
+                    message="HTTP call has timeout but no retry/backoff logic nearby. Transient failures will bubble up uncaught.",
+                    comment=_find_nearby_comment(lines, i),
+                    code=line.strip(),
+                ))
+    return findings
+
+
+def check_missing_idempotency_key(source: str, filename: str = "<stdin>") -> list[Finding]:
+    """Detect payment API calls without an idempotency key."""
+    findings = []
+    lines = source.split("\n")
+    payment_call_re = re.compile(
+        r"(?:stripe|braintree|razorpay|paypal|square).*\.(?:create|charge|capture|refund|transfer)\s*\(",
+        re.IGNORECASE,
+    )
+    post_payment_re = re.compile(
+        r"(?:requests|httpx|session)\.post\s*\(.*(?:payment|charge|refund|transfer|payout)",
+        re.IGNORECASE,
+    )
+    idempotency_re = re.compile(r"idempotency[_\-]?key|Idempotency-Key", re.IGNORECASE)
+    for i, line in enumerate(lines):
+        is_payment_call = payment_call_re.search(line) or post_payment_re.search(line)
+        if not is_payment_call:
+            continue
+        window = "\n".join(lines[max(0, i-3): min(len(lines), i+4)])
+        if not idempotency_re.search(window):
+            findings.append(Finding(
+                file=filename, line=i + 1,
+                pattern="missing-idempotency-key",
+                severity="critical",
+                message="Payment API call without idempotency key. Retries may cause duplicate charges.",
+                comment=_find_nearby_comment(lines, i),
+                code=line.strip(),
+            ))
+    return findings
+
+
+def check_unbounded_retry(source: str, filename: str = "<stdin>") -> list[Finding]:
+    """Detect retry loops with no maximum attempt ceiling."""
+    findings = []
+    lines = source.split("\n")
+    retry_loop_re = re.compile(
+        r"^\s*while\s+(?:True|not\s+\w+|retry|retrying|keep_trying|running|keep_going)\s*:",
+        re.IGNORECASE,
+    )
+    ceiling_re = re.compile(
+        r"(?:max_retries|max_attempts|max_tries|attempt\s*[>≥>=]+|retries?\s*[>≥>=]+|break|raise|sys\.exit|return\b.*after)",
+        re.IGNORECASE,
+    )
+    for i, line in enumerate(lines):
+        if not retry_loop_re.search(line):
+            continue
+        loop_body = "\n".join(lines[i+1: min(len(lines), i+21)])
+        if not ceiling_re.search(loop_body):
+            findings.append(Finding(
+                file=filename, line=i + 1,
+                pattern="unbounded-retry",
+                severity="critical",
+                message="Retry loop has no maximum attempt ceiling. Will retry forever on persistent failures.",
+                comment=_find_nearby_comment(lines, i),
+                code=line.strip(),
+            ))
+    return findings
+
+
+def check_silent_state_mutation(source: str, filename: str = "<stdin>") -> list[Finding]:
+    """Detect sensitive state mutations without an audit log or event emit."""
+    findings = []
+    lines = source.split("\n")
+    mutation_re = re.compile(
+        r"(?:account|user|payment|order|balance|status|role|permission)\s*[\.\[]\s*\w+\s*=|"
+        r"(?:update|set_status|set_balance|set_role|change_status)\s*\(",
+        re.IGNORECASE,
+    )
+    audit_re = re.compile(
+        r"(?:log\.|logger\.|audit\.|emit\(|event\.|track\(|record\(|journal\.|history\.)",
+        re.IGNORECASE,
+    )
+    for i, line in enumerate(lines):
+        if not mutation_re.search(line):
+            continue
+        if any(seg in filename for seg in ("/tests/", "/test_", "_test.py", "/bench", "/eval")):
+            continue
+        window_start = max(0, i - 10)
+        window_end = min(len(lines), i + 10)
+        context = "\n".join(lines[window_start:window_end])
+        if not audit_re.search(context):
+            findings.append(Finding(
+                file=filename, line=i + 1,
+                pattern="silent-state-mutation",
+                severity="info",
+                message="Sensitive state mutation with no audit log nearby. Compliance/debugging trail may be missing.",
+                comment=_find_nearby_comment(lines, i),
+                code=line.strip(),
+            ))
+    return findings
+
+
 def check_file(filepath: str) -> list[Finding]:
     """Run all checks on a file and apply directory-based severity stratification."""
     source = Path(filepath).read_text()
@@ -457,6 +602,11 @@ def check_file(filepath: str) -> list[Finding]:
     findings.extend(check_auth_before_action(source, filepath))
     findings.extend(check_error_swallowing(source, filepath))
     findings.extend(check_comment_action_mismatch(source, filepath))
+    findings.extend(check_float_for_money(source, filepath))
+    findings.extend(check_timeout_without_backoff(source, filepath))
+    findings.extend(check_missing_idempotency_key(source, filepath))
+    findings.extend(check_unbounded_retry(source, filepath))
+    findings.extend(check_silent_state_mutation(source, filepath))
     return [_stratify(f) for f in findings]
 
 
